@@ -4,7 +4,7 @@ import {
     X, Sparkles, FileText, Plus, Users,
     ArrowRight, Upload, ChevronRight, Settings,
     Clock, Trophy, Eye, Image as ImageIcon,
-    Check, Rocket, Brain, Lock, Globe, Share2, Tag, Play
+    Check, Rocket, Brain, Lock, Globe, Share2, Tag, Play, Download
 } from 'lucide-react';
 import api from '../utils/api';
 import QuizPlayer from './QuizPlayer';
@@ -65,6 +65,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
         show_immediate_feedback: false
     });
     const [files, setFiles] = useState([]);
+    const [savedDocuments, setSavedDocuments] = useState([]);
     const [thumbnailFile, setThumbnailFile] = useState(null); // Raw File object for server upload
     const fileInputRef = useRef(null);
 
@@ -92,6 +93,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                     ...editingQuiz.parametres_generation
                 });
                 setAiInput(editingQuiz.parametres_generation.prompt || '');
+                setSavedDocuments(editingQuiz.parametres_generation.saved_documents || []);
             }
 
             setCreationMode(isAI ? 'ai_prompt' : 'manual');
@@ -218,6 +220,8 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                             questions: generatedQuestions,
                             parametres_generation: {
                                 ...aiSettings,
+                                prompt: aiInput,
+                                saved_documents: suggestedMeta?.saved_documents || [],
                                 type_creation: 'ai'
                             }
                         };
@@ -278,7 +282,8 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 parametres_generation: {
                     ...aiSettings,
                     type_creation: creationMode.startsWith('ai') ? 'ai' : 'manual',
-                    prompt: aiInput // Keep original prompt for re-generation
+                    prompt: aiInput, // Keep original prompt for re-generation
+                    saved_documents: savedDocuments // Preserve files on edit save
                 }
             };
 
@@ -678,6 +683,32 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                                         <button onClick={() => handleRemoveFile(idx)} className="opacity-50 hover:opacity-100 hover:text-red-500 p-2 transition-colors" style={{ color: 'var(--text-muted)' }}>
                                                             <X size={18} />
                                                         </button>
+                                                    </motion.div>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {savedDocuments.length > 0 && (
+                                            <div className="grid grid-cols-1 gap-2 mt-4">
+                                                <p className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50 mb-2 mt-4" style={{ color: 'var(--text-secondary)' }}>Fichiers déjà envoyés</p>
+                                                {savedDocuments.map((doc, idx) => (
+                                                    <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} key={`saved-${idx}`}
+                                                        className="flex items-center justify-between p-3 border rounded-2xl shadow-sm"
+                                                        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>
+                                                        <div className="flex items-center gap-3 overflow-hidden">
+                                                            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-emerald-100 text-emerald-600">
+                                                                <FileText size={16} />
+                                                            </div>
+                                                            <span className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{doc.name}</span>
+                                                        </div>
+                                                        <div className="flex gap-2">
+                                                            <a href={doc.url} target="_blank" rel="noopener noreferrer" className="p-2 border rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors" style={{ borderColor: 'var(--glass-border)' }} title="Voir">
+                                                                <Eye size={16} className="text-indigo-500" />
+                                                            </a>
+                                                            <a href={doc.url} download={doc.name} className="p-2 border rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors" style={{ borderColor: 'var(--glass-border)' }} title="Télécharger">
+                                                                <Download size={16} className="text-emerald-500" />
+                                                            </a>
+                                                        </div>
                                                     </motion.div>
                                                 ))}
                                             </div>

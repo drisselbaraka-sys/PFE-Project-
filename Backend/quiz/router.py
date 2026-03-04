@@ -142,14 +142,34 @@ async def generate_quiz_ai(
         context = settings.get("prompt", "")
 
         # 1. Handle Document Extraction if files were provided
+        saved_documents = []
         if files:
             if len(files) > 5:
                 raise HTTPException(status_code=400, detail="Maximum 5 fichiers autorisés.")
             
+            docs_dir = os.path.join("uploads", "documents")
+            os.makedirs(docs_dir, exist_ok=True)
+            import uuid as _uuid
+
             file_data = []
             for file in files:
                 content = await file.read()
                 file_data.append((file.filename, content))
+
+                # Save the file permanently for editing
+                ext = os.path.splitext(file.filename)[1].lower()
+                safe_filename = f"doc_{_uuid.uuid4().hex}{ext}"
+                filepath = os.path.join(docs_dir, safe_filename)
+                with open(filepath, "wb") as f:
+                    f.write(content)
+                
+                # We assume the frontend and backend run on same host, or backend URL is known
+                # In production, this should be configurable
+                file_url = f"http://localhost:8001/uploads/documents/{safe_filename}"
+                saved_documents.append({
+                    "name": file.filename,
+                    "url": file_url
+                })
             
             extracted_text = DocumentService.process_files(file_data)
             context = extracted_text + "\n\n" + context
@@ -183,7 +203,8 @@ async def generate_quiz_ai(
             "questions": questions_data,
             "metadata": {
                 "titre": suggested_title,
-                "description": suggested_desc
+                "description": suggested_desc,
+                "saved_documents": saved_documents
             }
         }
         

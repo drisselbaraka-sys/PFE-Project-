@@ -71,6 +71,7 @@ class AIGenerationRequest(BaseModel):
 class AIDraftMetadata(BaseModel):
     titre: str
     description: str
+    saved_documents: Optional[List[dict]] = []
 
 class AIDraftResponse(BaseModel):
     questions: List[dict] # Flexibility for draft questions
