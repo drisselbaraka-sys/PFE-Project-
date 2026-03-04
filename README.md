@@ -19,7 +19,7 @@
 ### 🎮 Expérience de Jeu (Quiz Player)
 - **Interface Immersive** : Un lecteur de quiz élégant avec animations Fluides (Framer Motion).
 - **Gestion du Temps** : Chronomètre intégré pour chaque session.
-- **Bilan Détaillé (Mode Échecs)** : Après chaque quiz, accédez à une analyse complète de vos réponses avec des conseils personnalisés générés par l'IA pour progresser.
+- **Bilan Détaillé** : Après chaque quiz, accédez à une analyse complète de vos réponses avec des conseils personnalisés générés par l'IA pour progresser.
 
 ### 📚 Gestion Personnalisée
 - **Tableau de bord "Mes Quiz"** : Redessiné avec une interface 70/30 (Image/Boutons) ultra-premium.
@@ -85,6 +85,3 @@ Toutes les données sensibles (clés d'API, informations de connexion à la base
 
 ## 🤝 Contribution
 Ce projet a été réalisé dans le cadre d'un **Projet de Fin d'Études (PFE)** par **Driss El Baraka**. Toute suggestion d'amélioration est la bienvenue !
-
----
-*Développé avec ❤️ par [Driss El Baraka](https://github.com/drisselbaraka-sys)*
