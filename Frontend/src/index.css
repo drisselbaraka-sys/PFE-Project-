@@ -1,9 +1,125 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&display=swap');
 @import "tailwindcss";
 
+/* 
+ * Tailwind CSS v4 Directive
+ * @variant is used to create custom variants.
+ * If your IDE shows an "unknown at-rule" error, it's likely because 
+ * the IDE's CSS parser is not yet updated for Tailwind v4.
+ * The build process (Vite) handles this correctly.
+ */
+@variant dark (&:where(.dark, .dark *));
+
 @layer base {
+  :root {
+    --purple-glow: rgba(139, 92, 246, 0.15);
+
+    /* Light mode tokens */
+    --bg-base: #f9fafb;
+    --bg-surface: #ffffff;
+    --bg-elevated: #f3f4f6;
+    --border: #e5e7eb;
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --text-muted: #9ca3af;
+    --accent: #7c3aed;
+    --accent-soft: rgba(139, 92, 246, 0.12);
+    --glass-bg: rgba(255, 255, 255, 0.72);
+    --glass-border: rgba(255, 255, 255, 0.5);
+  }
+
+  html.dark {
+    /* --- Beautiful dark palette --- */
+    --bg-base: #0d1117;
+    /* deep dark, like GitHub dark */
+    --bg-surface: #161b27;
+    /* card/panel */
+    --bg-elevated: #1e2535;
+    /* input, hover */
+    --border: #2a3347;
+    /* subtle borders */
+    --text-primary: #e8eaf0;
+    /* soft white */
+    --text-secondary: #8892a4;
+    /* muted text */
+    --text-muted: #5a6478;
+    /* very muted */
+    --accent: #a78bfa;
+    /* violet glow */
+    --accent-soft: rgba(167, 139, 250, 0.12);
+    --glass-bg: rgba(13, 17, 23, 0.78);
+    --glass-border: rgba(42, 51, 71, 0.6);
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color: var(--text-primary);
+    background-color: var(--bg-base);
+    font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
   * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
+  }
+}
+
+@layer components {
+
+  /* ── Header glass ── */
+  .glass-header {
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px) saturate(200%);
+    -webkit-backdrop-filter: blur(16px) saturate(200%);
+    border-bottom: 1px solid var(--glass-border);
+    transition: background 0.3s ease, border-color 0.3s ease;
+  }
+
+  /* ── Search overlay ── */
+  .search-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(4px);
+    z-index: 40;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .search-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ── Scrollbar hide ── */
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ── Dark mode custom scrollbar (for other elements) ── */
+  html.dark ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  html.dark ::-webkit-scrollbar-track {
+    background: var(--bg-base);
+  }
+
+  html.dark ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+
+  html.dark ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
   }
 }
