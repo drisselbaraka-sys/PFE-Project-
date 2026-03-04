@@ -119,23 +119,25 @@ const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
         >
             {/* Upper Area (70%) - Image + Overlay Info */}
             <div className="relative h-[72%] shrink-0">
-                {quiz.image_couverture_url ? (
-                    <img
-                        src={quiz.image_couverture_url}
-                        alt={quiz.titre}
-                        className="w-full h-full object-cover rounded-t-[32px] transition-transform duration-700 group-hover:scale-110"
-                    />
-                ) : (
-                    <div
-                        className="w-full h-full flex flex-col items-center justify-center gap-2 rounded-t-[32px] transition-transform duration-700 group-hover:scale-110"
-                        style={{ background: theme.bg }}
-                    >
-                        <span className="text-6xl select-none">{theme.icon}</span>
-                    </div>
-                )}
+                <div className="absolute inset-0 overflow-hidden rounded-t-[32px]">
+                    {quiz.image_couverture_url ? (
+                        <img
+                            src={quiz.image_couverture_url}
+                            alt={quiz.titre}
+                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                        />
+                    ) : (
+                        <div
+                            className="w-full h-full flex flex-col items-center justify-center gap-2 transition-transform duration-700 group-hover:scale-110"
+                            style={{ background: theme.bg }}
+                        >
+                            <span className="text-6xl select-none">{theme.icon}</span>
+                        </div>
+                    )}
 
-                {/* Gradient Protection for Text */}
-                <div className="absolute inset-0 rounded-t-[32px] bg-linear-to-t from-black/95 via-black/40 to-transparent opacity-80" pointerEvents="none" />
+                    {/* Gradient Protection for Text */}
+                    <div className="absolute inset-0 bg-linear-to-t from-black/95 via-black/40 to-transparent opacity-80 pointer-events-none" />
+                </div>
 
                 {/* Top Badges */}
                 <div className="absolute top-4 left-4 flex gap-2">
