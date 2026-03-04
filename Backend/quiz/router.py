@@ -103,6 +103,30 @@ def update_quiz(
     return quiz
 
 
+@router.delete("/{quiz_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_quiz(
+    quiz_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.Utilisateur = Depends(get_current_user)
+):
+    # Verify existence and ownership
+    quiz = db.query(models.Quiz).filter(
+        models.Quiz.id_quiz == quiz_id,
+        models.Quiz.id_utilisateur == current_user.id_utilisateur
+    ).first()
+    
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz non trouvé ou accès refusé.")
+    
+    # Delete related Questions (Cascading should handle this, but explicitly doing it ensures it)
+    db.query(models.Question).filter(models.Question.id_quiz == quiz_id).delete()
+    
+    # Delete the quiz
+    db.delete(quiz)
+    db.commit()
+    return None
+
+
 @router.post("/upload-thumbnail")
 async def upload_thumbnail(
     file: UploadFile = File(...),

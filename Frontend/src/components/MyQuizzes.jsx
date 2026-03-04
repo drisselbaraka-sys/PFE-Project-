@@ -114,20 +114,20 @@ const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ delay: index * 0.055, type: 'spring', stiffness: 260, damping: 24 }}
-            className="quiz-card group rounded-[32px] overflow-hidden border cursor-pointer transition-all duration-500 hover:shadow-2xl hover:shadow-indigo-500/10 flex flex-col h-[480px]"
+            className="quiz-card group rounded-[32px] border cursor-pointer transition-all duration-500 hover:shadow-2xl hover:shadow-indigo-500/10 flex flex-col h-[480px]"
             style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}
         >
             {/* Upper Area (70%) - Image + Overlay Info */}
-            <div className="relative h-[72%] overflow-hidden shrink-0">
+            <div className="relative h-[72%] shrink-0">
                 {quiz.image_couverture_url ? (
                     <img
                         src={quiz.image_couverture_url}
                         alt={quiz.titre}
-                        className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                        className="w-full h-full object-cover rounded-t-[32px] transition-transform duration-700 group-hover:scale-110"
                     />
                 ) : (
                     <div
-                        className="w-full h-full flex flex-col items-center justify-center gap-2 transition-transform duration-700 group-hover:scale-110"
+                        className="w-full h-full flex flex-col items-center justify-center gap-2 rounded-t-[32px] transition-transform duration-700 group-hover:scale-110"
                         style={{ background: theme.bg }}
                     >
                         <span className="text-6xl select-none">{theme.icon}</span>
@@ -135,7 +135,7 @@ const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
                 )}
 
                 {/* Gradient Protection for Text */}
-                <div className="absolute inset-0 bg-linear-to-t from-black/95 via-black/40 to-transparent opacity-80" />
+                <div className="absolute inset-0 rounded-t-[32px] bg-linear-to-t from-black/95 via-black/40 to-transparent opacity-80" pointerEvents="none" />
 
                 {/* Top Badges */}
                 <div className="absolute top-4 left-4 flex gap-2">
