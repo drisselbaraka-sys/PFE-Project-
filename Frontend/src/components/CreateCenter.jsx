@@ -546,7 +546,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                         {/* Thumbnail Upload with YouTube-style hover preview */}
                                         <div>
                                             <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Miniature (Thumbnail)</label>
-                                            <div className="mt-2 relative group cursor-pointer overflow-hidden rounded-2xl aspect-video border-2 border-dashed hover:border-indigo-400 transition-all"
+                                            <div className="mt-2 relative group cursor-pointer overflow-hidden rounded-2xl aspect-7/6 border-2 border-dashed hover:border-indigo-400 transition-all"
                                                 style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border)' }}>
                                                 {quizData.image_couverture_url ? (
                                                     <>
