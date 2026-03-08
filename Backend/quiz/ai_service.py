@@ -20,11 +20,11 @@ except Exception:
 from typing import List, Dict, Optional
 from database.config import settings as app_settings
 
-MAX_CONTEXT_CHARS = 28_000
-DEFAULT_BATCH_SIZE = 8
-QWEN_REQUEST_TIMEOUT = 45
-QWEN_MAX_RETRIES = 2
-MAX_TOTAL_AI_SECONDS = 95
+MAX_CONTEXT_CHARS = 40_000
+DEFAULT_BATCH_SIZE = 10
+QWEN_REQUEST_TIMEOUT = 70
+QWEN_MAX_RETRIES = 3
+MAX_TOTAL_AI_SECONDS = 170
 
 
 def _safe_int(value, default):
@@ -43,13 +43,45 @@ def _prepare_context(context: str, max_chars: int = MAX_CONTEXT_CHARS) -> str:
     return f"{cleaned[:head]}\n\n[...]\n\n{cleaned[-tail:]}"
 
 
+
+
+def _strip_document_markers(context: str) -> str:
+    cleaned_lines = []
+    for line in (context or '').splitlines():
+        line_strip = line.strip()
+        if not line_strip:
+            continue
+        if line_strip.startswith('--- Contenu de'):
+            continue
+        if line_strip.startswith('[DOCUMENT'):
+            continue
+        cleaned_lines.append(line_strip)
+    return '\n'.join(cleaned_lines)
+
+
+def _looks_like_noise(sentence: str) -> bool:
+    s = sentence.strip()
+    if len(s) < 35:
+        return True
+    if re.search(r'(?:\.pdf|\.docx|\.txt|oct/char|nchar|raw|unicode)', s, flags=re.IGNORECASE):
+        return True
+    if sum(ch.isalpha() for ch in s) < 20:
+        return True
+    return False
+
+
 def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]:
     """Fallback: génère des questions par extraction locale si Qwen échoue."""
-    sentences = re.split(r'[.!?]+', context)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 20 and "http" not in s and "www" not in s]
+    cleaned_context = _strip_document_markers(context)
+    sentences = re.split(r'[.!?]+', cleaned_context)
+    sentences = [
+        s.strip()
+        for s in sentences
+        if len(s.strip()) > 20 and "http" not in s and "www" not in s and not _looks_like_noise(s)
+    ]
 
     if not sentences:
-        sentences = [s.strip() for s in re.split(r'[.!?]+', context) if len(s.strip()) > 0]
+        sentences = [s.strip() for s in re.split(r'[.!?]+', cleaned_context) if len(s.strip()) > 0 and not _looks_like_noise(s)]
         if not sentences:
             raise ValueError("Contenu insuffisant pour générer des questions")
 
@@ -59,7 +91,7 @@ def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]
 
     for i in range(num_questions):
         sentence = sentences_pool[i % len(sentences_pool)]
-        q_text = f"Basé sur le contenu du document, que peut-on affirmer concernant : '{sentence[:50]}...' ?"
+        q_text = f"Selon le contenu étudié, quelle affirmation est correcte à propos de : '{sentence[:80]}...' ?"
         correct_answer = sentence[:120] if len(sentence) > 120 else sentence
 
         options = [
@@ -158,6 +190,7 @@ Génère un quiz de qualité basé strictement sur le contenu fourni.{metadata_i
 
 Contraintes strictes:
 - EXACTEMENT {num_questions} questions.
+- Ignore les noms de fichiers, marqueurs techniques et métadonnées; base-toi sur les idées métier/contenu réel.
 - Langue: {language}
 - Difficulté: {difficulty} ({diff_instructions.get(difficulty, '')})
 - Ton: {tone} ({tone_instructions.get(tone, '')})
@@ -180,7 +213,7 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
   ]
 }}"""
 
-        prepared_context = _prepare_context(context)
+        prepared_context = _prepare_context(_strip_document_markers(context))
         user_content = f"Texte source:\n\n{prepared_context}"
 
         payload = {
@@ -280,7 +313,7 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
         requested_count = max(1, min(requested_count, 30))
         settings['num_questions'] = requested_count
 
-        prepared_context = _prepare_context(context)
+        prepared_context = _prepare_context(_strip_document_markers(context))
 
         if settings.get('force_fallback'):
             print(" [AI] force_fallback activé.")

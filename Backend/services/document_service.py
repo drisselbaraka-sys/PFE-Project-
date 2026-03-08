@@ -126,9 +126,9 @@ class DocumentService:
             except Exception:
                 print(f" [DocService] Extracted (len unknown) from {filename}")
 
-            # Preserve previous behaviour of concatenating content (including markers)
+            # Concaténation sans exposer les noms de fichiers au modèle
             if extracted:
-                combined_text += f"\n--- Contenu de {filename} ---\n"
+                combined_text += "\n[DOCUMENT_CONTENT]\n"
                 combined_text += extracted
             if len(combined_text) >= MAX_TOTAL_TEXT_CHARS:
                 print(f" [DocService] Texte total tronqué à {MAX_TOTAL_TEXT_CHARS} caractères.")

@@ -215,7 +215,7 @@ async def generate_quiz_ai(
 
             requested_questions = max(1, min(int(settings.get("num_questions", 10)), 30))
             file_count = len(files or [])
-            dynamic_timeout = min(180.0, 55.0 + requested_questions * 2 + file_count * 5)
+            dynamic_timeout = min(180.0, 75.0 + requested_questions * 2.8 + file_count * 12)
             print(f" [Quiz] Dynamic timeout: {dynamic_timeout}s for {requested_questions} questions and {file_count} file(s).")
 
             questions_data = await asyncio.wait_for(
