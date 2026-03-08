@@ -17,9 +17,8 @@ class QuestionCreate(QuestionBase):
 class QuestionResponse(QuestionBase):
     id_question: str
     id_quiz: str
-
-    class Config:
-        from_attributes = True
+    # Pydantic v2: use `model_config` for model-wide config
+    model_config = {"from_attributes": True}
 
 class QuizBase(BaseModel):
     titre: Optional[str] = "Quiz sans titre"
@@ -27,11 +26,12 @@ class QuizBase(BaseModel):
     difficulte_moyenne: Optional[str] = "Moyen"
     duree_max_minutes: Optional[int] = 10
     visibilite: str = "public"
+    peut_etre_clone: bool = True
     est_corrige_auto: bool = True
-    tags: List[str] = []
+    tags: List[str] = Field(default_factory=list)
     image_couverture_url: Optional[str] = None
     type_creation: Optional[str] = "manual"
-    parametres_generation: Optional[dict] = {}
+    parametres_generation: dict = Field(default_factory=dict)
 
 class QuizCreate(QuizBase):
     questions: List[QuestionCreate]
@@ -41,9 +41,7 @@ class QuizResponse(QuizBase):
     id_utilisateur: str
     date_creation: datetime
     questions: List[QuestionResponse]
-
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class QuizSummary(QuizBase):
@@ -53,9 +51,7 @@ class QuizSummary(QuizBase):
     date_creation: datetime
     nombre_questions: int = 0
     is_favorited: bool = False
-
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class AIGenerationRequest(BaseModel):
     type: str  # "subject" or "document"
@@ -71,8 +67,8 @@ class AIGenerationRequest(BaseModel):
 class AIDraftMetadata(BaseModel):
     titre: str
     description: str
-    saved_documents: Optional[List[dict]] = []
+    saved_documents: List[dict] = Field(default_factory=list)
 
 class AIDraftResponse(BaseModel):
-    questions: List[dict] # Flexibility for draft questions
+    questions: List[dict] = Field(default_factory=list)  # Flexibility for draft questions
     metadata: AIDraftMetadata

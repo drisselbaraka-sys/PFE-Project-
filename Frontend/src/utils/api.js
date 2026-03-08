@@ -43,11 +43,32 @@ const api = {
             }
 
             if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
+                // Try to parse error body as JSON, but tolerate empty responses
+                const error = await response.text().then(t => {
+                    try {
+                        return t ? JSON.parse(t) : {};
+                    } catch (_) {
+                        return { message: t };
+                    }
+                }).catch(() => ({}));
                 throw { status: response.status, ...error };
             }
 
-            return await response.json();
+            // No Content
+            if (response.status === 204) return null;
+
+            // If response has no body, return null
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                // return raw text for non-json responses
+                const text = await response.text().catch(() => null);
+                return text;
+            }
+
+            // Parse JSON safely
+            const text = await response.text().catch(() => null);
+            if (!text) return null;
+            return JSON.parse(text);
         } catch (error) {
             console.error(` [API] Request to ${endpoint} failed:`, error);
             throw error;

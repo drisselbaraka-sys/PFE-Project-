@@ -44,6 +44,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
         difficulte_moyenne: 'Moyen',
         duree_max_minutes: 10,
         visibilite: 'public',
+        peut_etre_clone: true,
         tags: [],
         image_couverture_url: ''
     });
@@ -214,7 +215,8 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                             description: finalDesc,
                             difficulte_moyenne: aiSettings.difficulty,
                             duree_max_minutes: aiSettings.time_mode === 'Timer Global' ? aiSettings.time_value : 10,
-                            visibilite: 'public',
+                            visibilite: quizData.visibilite,
+                            peut_etre_clone: quizData.peut_etre_clone,
                             tags: quizData.tags,
                             image_couverture_url: finalImageUrl,
                             questions: generatedQuestions,
@@ -247,7 +249,9 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
             }
         } catch (err) {
             console.error("AI Generation failed:", err);
-            alert("Erreur lors de la génération : " + (err.response?.data?.detail || err.message));
+            // Normalize error message from different shapes (thrown object, fetch error, axios-like)
+            const errMsg = (err && (err.detail || err.message || err.error)) || (err?.response?.data?.detail) || JSON.stringify(err);
+            alert("Erreur lors de la génération : " + errMsg);
             setIsLoading(false);
             setAiProgress(0);
         } finally {
@@ -546,13 +550,20 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                         {/* Thumbnail Upload with YouTube-style hover preview */}
                                         <div>
                                             <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Miniature (Thumbnail)</label>
-                                            <div className="mt-2 relative group cursor-pointer overflow-hidden rounded-2xl aspect-video border-2 border-dashed hover:border-indigo-400 transition-all"
+                                            <div className="mt-2 relative group cursor-pointer overflow-hidden rounded-2xl aspect-4/3 border-2 border-dashed hover:border-indigo-400 transition-all"
                                                 style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border)' }}>
                                                 {quizData.image_couverture_url ? (
                                                     <>
                                                         <img src={quizData.image_couverture_url} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
                                                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                                            <button onClick={() => setQuizData({ ...quizData, image_couverture_url: '' })} className="p-2 bg-red-500 text-white rounded-full shadow-lg">
+                                                            <button onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setQuizData({ ...quizData, image_couverture_url: '' });
+                                                                setThumbnailFile(null);
+                                                                if (document.getElementById('thumb-upload')) {
+                                                                    document.getElementById('thumb-upload').value = '';
+                                                                }
+                                                            }} className="p-2 bg-red-500 text-white rounded-full shadow-lg hover:bg-red-600 transition-all">
                                                                 <X size={16} />
                                                             </button>
                                                         </div>

@@ -118,7 +118,7 @@ class Quiz(Base):
     date_modification = Column(DateTime, onupdate=datetime.datetime.utcnow)
     est_actif = Column(Boolean, default=True)
     visibilite = Column(String, default="public")
-    # peut_etre_clone = Column(Boolean, default=True)
+    peut_etre_clone = Column(Boolean, default=True)
     tags = Column(JSON, default=[])
     est_corrige_auto = Column(Boolean, default=True)
     image_couverture_url = Column(String)

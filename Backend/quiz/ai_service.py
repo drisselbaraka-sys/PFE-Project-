@@ -1,7 +1,20 @@
 import os
 import json
 import re
-import requests
+# Prefer httpx, fall back to requests, finally to urllib if neither is available
+_HTTP_LIB = None
+try:
+    import httpx as _http_lib
+    _HTTP_LIB = 'httpx'
+except Exception:
+    try:
+        import requests as _http_lib
+        _HTTP_LIB = 'requests'
+    except Exception:
+        # Last-resort: use urllib (std lib)
+        import urllib.request as _urllib_request
+        import urllib.error as _urllib_error
+        _HTTP_LIB = 'urllib'
 from typing import List, Dict
 from database.config import settings as app_settings
 
@@ -166,7 +179,25 @@ STRUCTURE JSON :
             last_err = None
             for attempt in range(max_retries):
                 try:
-                    response = requests.post(API_URL, headers=headers, json=payload, timeout=120)
+                    if _HTTP_LIB == 'httpx':
+                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=120.0)
+                    elif _HTTP_LIB == 'requests':
+                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=120.0)
+                    else:
+                        # urllib fallback
+                        data = json.dumps(payload).encode('utf-8')
+                        req = _urllib_request.Request(API_URL, data=data, headers=headers, method='POST')
+                        try:
+                            with _urllib_request.urlopen(req, timeout=120) as resp:
+                                resp_text = resp.read().decode('utf-8')
+                                class _RespObj:
+                                    pass
+                                response = _RespObj()
+                                response.status_code = resp.getcode()
+                                response.text = resp_text
+                        except _urllib_error.HTTPError as e:
+                            response = e
+                    # status check done below
                     if response.status_code == 200:
                         break
                     
@@ -186,17 +217,47 @@ STRUCTURE JSON :
                 print(" [Qwen] Toutes les tentatives ont echoue.")
                 return None
                 
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            
-            # Clean up potential markdown blocks
+            # Be defensive: ensure response body is present and JSON-parsable
+            resp_text = response.text
+            if not resp_text or not resp_text.strip():
+                print(" [Qwen] Response body empty.")
+                return None
+
+            # Try parsing the outer HF router JSON first
+            try:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            except Exception:
+                # If outer JSON parsing fails, fallback to raw text
+                content = resp_text
+
+            # Clean up potential markdown/code fences to extract embedded JSON
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-                
-            result = json.loads(content)
-            questions = result.get("questions", [])
+                # try to extract content between the first set of backticks
+                parts = content.split("```")
+                if len(parts) >= 3:
+                    content = parts[1].strip()
+
+            # If content is empty now, attempt to extract any JSON object substring
+            if not content or not content.strip():
+                # Try to find a JSON object in the raw response text
+                import re
+                m = re.search(r"\{(?:.|\n)*\}", resp_text)
+                if m:
+                    content = m.group(0)
+
+            # Finally try to load JSON
+            try:
+                result = json.loads(content)
+            except Exception as e:
+                print(f" [Qwen] Failed to parse JSON from content: {e}")
+                # Log a snippet to help debugging
+                snippet = content[:1000] if content else resp_text[:1000]
+                print(f" [Qwen] Response snippet: {snippet}")
+                return None
+            questions = result.get("questions", []) if isinstance(result, dict) else []
             print(f" [Qwen] Generated {len(questions)}/{num_questions} questions.")
             
             # Injecter titre/description dans les settings pour le router

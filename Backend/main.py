@@ -27,6 +27,21 @@ try:
 except Exception as e:
     print(f"ERROR: Échec de la création des tables : {e}")
 
+# Ensure legacy DBs get the 'peut_etre_clone' column if missing (best-effort)
+try:
+    with engine.connect() as conn:
+        try:
+            conn.execute("ALTER TABLE quiz ADD COLUMN IF NOT EXISTS peut_etre_clone BOOLEAN DEFAULT true;")
+        except Exception:
+            # Some SQL engines (older SQLite) may not support IF NOT EXISTS; try a safer approach
+            try:
+                conn.execute("ALTER TABLE quiz ADD COLUMN peut_etre_clone BOOLEAN DEFAULT true")
+            except Exception:
+                # If this fails, it's likely the column already exists or the engine doesn't allow ALTER
+                pass
+except Exception as e:
+    print(f"WARNING: Could not ensure 'peut_etre_clone' column exists automatically: {e}")
+
 # T5 Pre-loading REMOVED (using Qwen Cloud)
 
 

@@ -4,7 +4,6 @@ from typing import List, Optional
 import json
 import asyncio
 import os
-import requests
 
 from database.database import get_db
 from database import models
@@ -197,12 +196,23 @@ async def generate_quiz_ai(
             
             extracted_text = DocumentService.process_files(file_data)
             context = extracted_text + "\n\n" + context
+            print(f" [Quiz] Extracted text length: {len(extracted_text or '')} characters from uploaded files.")
+            if not (extracted_text and extracted_text.strip()):
+                # If no text could be extracted, return a clear error to the frontend
+                raise HTTPException(status_code=400, detail="Aucun texte exploitable n'a été extrait des fichiers fournis. Veuillez coller le texte du document ou fournir un PDF/DOCX/TXT contenant du texte sélectionnable.")
 
         if not context.strip():
             raise HTTPException(status_code=400, detail="Veuillez fournir un texte ou un document.")
 
         # 2. Call AI Service (Qwen 72B - Cloud API)
         try:
+            # Log snippet/length of context sent to AI for debugging
+            try:
+                snippet = (context[:800] + '...') if len(context) > 800 else context
+            except Exception:
+                snippet = ''
+            print(f" [Quiz] Context length: {len(context or '')} chars. Snippet: {snippet}")
+
             # Augmenter le timeout pour les appels réseau si nécessaire
             questions_data = await asyncio.wait_for(
                 asyncio.to_thread(AIService.generate_questions, context, settings),
@@ -256,6 +266,10 @@ def get_user_quizzes(
 
     result = []
     for quiz in quizzes:
+        # normalize peut_etre_clone: if missing or NULL, default to True
+        _peut_clone = getattr(quiz, 'peut_etre_clone', None)
+        if _peut_clone is None:
+            _peut_clone = True
         result.append(schemas.QuizSummary(
             id_quiz=quiz.id_quiz,
             id_utilisateur=quiz.id_utilisateur,
@@ -264,6 +278,7 @@ def get_user_quizzes(
             difficulte_moyenne=quiz.difficulte_moyenne,
             duree_max_minutes=quiz.duree_max_minutes,
             visibilite=quiz.visibilite,
+            peut_etre_clone=_peut_clone,
             est_corrige_auto=quiz.est_corrige_auto,
             tags=quiz.tags if quiz.tags is not None else [],
             image_couverture_url=quiz.image_couverture_url,
@@ -289,6 +304,9 @@ def get_quiz(
     
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz introuvable ou accès refusé.")
+    # Ensure peut_etre_clone is not None to satisfy response schema boolean
+    if getattr(quiz, 'peut_etre_clone', None) is None:
+        quiz.peut_etre_clone = True
     return quiz
 
 

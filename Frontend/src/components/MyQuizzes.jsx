@@ -5,7 +5,7 @@ import {
     Search, Plus, Sparkles, PenLine, Star, MoreVertical,
     Play, Edit3, Share2, Trash2, BookOpen,
     Trophy, Calendar, BarChart2, ArrowLeft, Zap, Loader2,
-    AlertCircle, RefreshCw, ChevronDown, Clock
+    AlertCircle, RefreshCw, ChevronDown, Clock, Globe, Lock
 } from 'lucide-react';
 
 // ──────────────────────────────────────────────────────────
@@ -101,31 +101,44 @@ const QuizActionsMenu = ({ quizId, onAction, lightMode = false }) => {
 // ──────────────────────────────────────────────────────────
 // Carte de Quiz
 // ──────────────────────────────────────────────────────────
-const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
+const QuizCard = ({ quiz, index, onAction, onToggleFavorite, isDeleting }) => {
+    const [imgError, setImgError] = useState(false);
     const theme = getThemeForId(quiz.id_quiz);
     const levelStyle = LEVEL_COLORS[quiz.difficulte_moyenne] || LEVEL_COLORS['Moyen'];
     const formattedDate = new Date(quiz.date_creation).toLocaleDateString('fr-FR', {
         day: '2-digit', month: 'short', year: 'numeric'
     });
+    // extract an accent color from the theme gradient (first hex) for the shadow
+    const accentMatch = (theme.bg || '').match(/#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})/);
+    const accentHex = accentMatch ? accentMatch[0] : '#6366f1';
+    const hexToRgba = (hex, a = 0.22) => {
+        const h = hex.replace('#', '');
+        const bigint = parseInt(h.length === 3 ? h.split('').map(c=>c+c).join('') : h, 16);
+        const r = (bigint >> 16) & 255;
+        const g = (bigint >> 8) & 255;
+        const b = bigint & 255;
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    };
 
     return (
         <motion.div
             initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
+            animate={isDeleting ? { opacity: 0.6, scale: 0.98, y: -6 } : { opacity: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ delay: index * 0.055, type: 'spring', stiffness: 260, damping: 24 }}
-            className="quiz-card group rounded-[32px] border cursor-pointer transition-all duration-500 hover:shadow-2xl hover:shadow-indigo-500/10 flex flex-col h-[480px]"
+            className="quiz-card group rounded-[32px] border cursor-pointer transition-all duration-500 hover:shadow-2xl hover:shadow-indigo-500/10 relative h-[480px] overflow-hidden"
             style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}
         >
-            {/* Upper Area (70%) - Image + Overlay Info */}
-            <div className="relative h-[72%] shrink-0">
-                <div className="absolute inset-0 overflow-hidden rounded-t-[32px]">
-                    {quiz.image_couverture_url ? (
-                        <img
-                            src={quiz.image_couverture_url}
-                            alt={quiz.titre}
-                            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                        />
+            {/* Full Area - Image covers entire card; overlays sit on top */}
+            <div className="relative h-full w-full">
+                <div className="absolute inset-0 overflow-hidden">
+                    {quiz.image_couverture_url && !imgError ? (
+                            <img
+                                src={quiz.image_couverture_url}
+                                alt={quiz.titre}
+                                className={`w-full h-full object-cover transform transition-transform duration-500 ease-in-out ${isDeleting ? 'opacity-60' : ''} group-hover:scale-110`}
+                                onError={() => setImgError(true)}
+                            />
                     ) : (
                         <div
                             className="w-full h-full flex flex-col items-center justify-center gap-2 transition-transform duration-700 group-hover:scale-110"
@@ -163,8 +176,8 @@ const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
                     />
                 </button>
 
-                {/* Metadata Overlay (Pinned to Bottom) */}
-                <div className="absolute bottom-0 left-0 w-full p-6 text-white space-y-3">
+                {/* Metadata Overlay (Pinned above the action strip) */}
+                <div className="absolute bottom-20 left-0 w-full p-6 text-white space-y-3">
                     <div className="flex justify-between items-start gap-4">
                         <h3 className="font-black text-xl leading-tight line-clamp-2 flex-1 drop-shadow-md">
                             {quiz.titre}
@@ -200,16 +213,18 @@ const QuizCard = ({ quiz, index, onAction, onToggleFavorite }) => {
                 </div>
             </div>
 
-            {/* Bottom Area (30%) - Action Button */}
-            <div className="flex-1 flex items-center p-6 bg-transparent">
-                <button
-                    onClick={(e) => { e.stopPropagation(); onAction('play', quiz.id_quiz); }}
-                    className="w-full flex items-center justify-center gap-3 py-4 rounded-[24px] font-black text-sm text-white transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-indigo-500/20"
-                    style={{ background: theme.bg }}
-                >
-                    <Play size={18} className="fill-white" />
-                    Lancer le quiz
-                </button>
+            {/* Action Strip - semi-opaque band with the launch button */}
+            <div className="absolute left-0 right-0 bottom-0 px-6 pb-6 pt-4">
+                <div className="w-full mx-auto rounded-[20px] px-4 py-3 flex items-center justify-center"
+                    style={{ background: 'linear-gradient(90deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))', backdropFilter: 'blur(6px)' }}>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); onAction('play', quiz.id_quiz); }}
+                        className="w-full max-w-[420px] flex items-center justify-center gap-3 py-3 rounded-[20px] font-black text-sm transform transition-all duration-300 ease-in-out hover:scale-[1.02] active:scale-[0.98] bg-[rgba(6,6,10,0.66)] border border-white/12 text-white hover:bg-white hover:text-black hover:border-black"
+                    >
+                        <Play size={18} className="fill-current" />
+                        Lancer le quiz
+                    </button>
+                </div>
             </div>
         </motion.div>
     );
@@ -268,6 +283,9 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
     const [sortBy, setSortBy] = useState('date_desc');
     const [isSortOpen, setIsSortOpen] = useState(false);
     const sortRef = useRef(null);
+    const [extraFilters, setExtraFilters] = useState({ clonable: false, public: false, private: false });
+    const [deleteCandidate, setDeleteCandidate] = useState(null);
+    const [deletingIds, setDeletingIds] = useState([]);
 
     // ── Sorting Options ──
     const sortOptions = [
@@ -279,8 +297,7 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
         { id: 'difficulty_asc', label: 'Plus facile', icon: <BarChart2 size={14} /> },
         { id: 'time_desc', label: 'Plus long', icon: <Clock size={14} /> },
         { id: 'time_asc', label: 'Plus court', icon: <Clock size={14} /> },
-        { id: 'clonable', label: 'Clonable uniquement', icon: <Plus size={14} /> },
-        { id: 'visibility', label: 'Public d\'abord', icon: <Share2 size={14} /> },
+        { id: 'clonable', label: 'Clonables d\'abord', icon: <Plus size={14} /> },
     ];
 
     useEffect(() => {
@@ -343,20 +360,26 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
                 }
                 case 'time_desc': return (b.duree_max_minutes || 0) - (a.duree_max_minutes || 0);
                 case 'time_asc': return (a.duree_max_minutes || 0) - (b.duree_max_minutes || 0);
-                case 'clonable': return (b.is_clonable ? 1 : 0) - (a.is_clonable ? 1 : 0);
-                case 'visibility': return (b.visibilite === 'public' ? 1 : 0) - (a.visibilite === 'public' ? 1 : 0);
+                case 'clonable': return (b.peut_etre_clone ? 1 : 0) - (a.peut_etre_clone ? 1 : 0);
+                case 'visibilite_public': return (b.visibilite === 'public' ? 1 : 0) - (a.visibilite === 'public' ? 1 : 0);
+                case 'visibilite_prive': return (b.visibilite === 'private' ? 1 : 0) - (a.visibilite === 'private' ? 1 : 0);
                 default: return 0;
             }
         });
 
+        // Apply extra multi-filters (AND logic). If a flag is true, the quiz must satisfy it.
+        const filteredWithFlags = filtered.filter((q) => {
+            if (extraFilters.clonable && !q.peut_etre_clone) return false;
+            if (extraFilters.public && q.visibilite !== 'public') return false;
+            if (extraFilters.private && q.visibilite !== 'private') return false;
+            return true;
+        });
+
     const handleAction = async (action, quizId) => {
         if (action === 'delete') {
-            try {
-                await api.delete(`/quiz/${quizId}`);
-                setQuizzes((prev) => prev.filter((q) => q.id_quiz !== quizId));
-            } catch (err) {
-                alert('Erreur lors de la suppression du quiz.');
-            }
+            // open confirmation modal instead of deleting immediately
+            setDeleteCandidate({ id: quizId });
+            return;
         } else if (action === 'share') {
             navigator.clipboard.writeText(`${window.location.origin}/quiz/${quizId}`).catch(() => { });
             setShareNotif(true);
@@ -374,6 +397,25 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
             } finally {
                 setLoading(false);
             }
+        }
+    };
+
+    const confirmDelete = async (quizId) => {
+        // mark as deleting to show animation/overlay
+        setDeletingIds((p) => [...p, quizId]);
+        setDeleteCandidate(null);
+
+        // small delay so the UI animation can play
+        await new Promise((res) => setTimeout(res, 450));
+
+        try {
+            await api.delete(`/quiz/${quizId}`);
+            setQuizzes((prev) => prev.filter((q) => q.id_quiz !== quizId));
+        } catch (err) {
+            console.error('[MyQuizzes] failed delete:', err);
+            alert('Erreur lors de la suppression du quiz.');
+        } finally {
+            setDeletingIds((p) => p.filter((id) => id !== quizId));
         }
     };
 
@@ -402,45 +444,37 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
             className="min-h-screen transition-colors duration-500"
             style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}
         >
-            {/* ── Hero Banner ── */}
-            <div
-                className="relative overflow-hidden"
-                style={{ background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%)' }}
-            >
-                <div className="absolute -top-20 -right-20 w-96 h-96 rounded-full bg-white/5 blur-3xl" />
-                <div className="absolute -bottom-10 -left-10 w-64 h-64 rounded-full bg-white/5 blur-3xl" />
-
-                <div className="relative max-w-7xl mx-auto px-6 py-12 pb-20">
-                    <button
-                        onClick={onClose}
-                        className="flex items-center gap-2 text-white/70 hover:text-white mb-8 transition-colors font-semibold text-sm"
-                    >
-                        <ArrowLeft size={18} />
-                        Retour au tableau de bord
-                    </button>
-                    <div className="flex items-end justify-between">
-                        <div>
-                            <h1 className="text-4xl font-black text-white mb-2">Mes Quiz 📚</h1>
-                            <p className="text-white/70 font-medium">
-                                {quizzes.length} quiz créé{quizzes.length !== 1 ? 's' : ''} •{' '}
-                                {quizzes.filter((q) => q.is_favorited).length} favori{quizzes.filter((q) => q.is_favorited).length !== 1 ? 's' : ''}
-                            </p>
-                        </div>
-                        <motion.button
-                            whileHover={{ scale: 1.04 }}
-                            whileTap={{ scale: 0.96 }}
-                            onClick={onCreateClick}
-                            className="hidden md:flex items-center gap-2 bg-white text-purple-700 font-black px-6 py-3 rounded-2xl shadow-xl text-sm"
-                        >
-                            <Plus size={18} />
-                            Nouveau Quiz
-                        </motion.button>
-                    </div>
+            {/* Compact header (replaces large hero banner) */}
+            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between" style={{ paddingLeft: '56px' }}>
+                <div className="flex items-center gap-4">
+                    <h1 className="text-2xl font-black" style={{ color: 'var(--text-primary)' }}>Mes Quiz 📚</h1>
+                    <p className="text-sm font-medium" style={{ color: 'var(--text-muted)' }}>
+                        {quizzes.length} quiz créé{quizzes.length !== 1 ? 's' : ''} • {quizzes.filter((q) => q.is_favorited).length} favori{quizzes.filter((q) => q.is_favorited).length !== 1 ? 's' : ''}
+                    </p>
                 </div>
+                <motion.button
+                    whileHover={{ scale: 1.04 }}
+                    whileTap={{ scale: 0.96 }}
+                    onClick={onCreateClick}
+                    className="hidden md:flex items-center gap-2 bg-white text-purple-700 font-black px-6 py-3 rounded-2xl shadow-xl text-sm"
+                >
+                    <Plus size={18} />
+                    Nouveau Quiz
+                </motion.button>
             </div>
 
+            {/* Small fixed back button (icon-only) visible on the page */}
+            <motion.button
+                onClick={onClose}
+                className="fixed top-4 left-4 z-50 p-2 rounded-full bg-white/5 text-white shadow-md hover:bg-white/10 transition-colors"
+                style={{ backdropFilter: 'blur(6px)' }}
+                aria-label="Retour au tableau de bord"
+            >
+                <ArrowLeft size={18} />
+            </motion.button>
+
             {/* ── Toolbar (floats over banner) ── */}
-            <div className="max-w-7xl mx-auto px-6 -mt-8 mb-8 relative z-10">
+            <div className="max-w-7xl mx-auto px-6 mt-4 mb-8 relative z-10">
                 <div
                     className="rounded-3xl shadow-xl border p-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-4 transition-all duration-500"
                     style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}
@@ -475,6 +509,43 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
                                 {f.label}
                             </button>
                         ))}
+                        {/* Extra multi-filters: clonable, public, private */}
+                        <button
+                            onClick={() => setExtraFilters(f => ({ ...f, clonable: !f.clonable }))}
+                            className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs transition-all"
+                            style={{
+                                backgroundColor: extraFilters.clonable ? '#10b981' : 'var(--bg-elevated)',
+                                color: extraFilters.clonable ? '#fff' : 'var(--text-muted)',
+                                boxShadow: extraFilters.clonable ? '0 6px 18px rgba(16,185,129,0.16)' : 'none',
+                            }}
+                        >
+                            <Plus size={13} />
+                            Clonable
+                        </button>
+                        <button
+                            onClick={() => setExtraFilters(f => ({ ...f, public: !f.public }))}
+                            className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs transition-all"
+                            style={{
+                                backgroundColor: extraFilters.public ? '#6366f1' : 'var(--bg-elevated)',
+                                color: extraFilters.public ? '#fff' : 'var(--text-muted)',
+                                boxShadow: extraFilters.public ? '0 6px 18px rgba(99,102,241,0.16)' : 'none',
+                            }}
+                        >
+                            <Globe size={13} />
+                            Public
+                        </button>
+                        <button
+                            onClick={() => setExtraFilters(f => ({ ...f, private: !f.private }))}
+                            className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl font-bold text-xs transition-all"
+                            style={{
+                                backgroundColor: extraFilters.private ? '#ef4444' : 'var(--bg-elevated)',
+                                color: extraFilters.private ? '#fff' : 'var(--text-muted)',
+                                boxShadow: extraFilters.private ? '0 6px 18px rgba(239,68,68,0.12)' : 'none',
+                            }}
+                        >
+                            <Lock size={13} />
+                            Privé
+                        </button>
                     </div>
 
                     {/* Sorting Dropdown */}
@@ -568,20 +639,21 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
                 {/* Quiz Grid */}
                 {!loading && !error && (
                     <AnimatePresence mode="popLayout">
-                        {filtered.length === 0 ? (
+                        {filteredWithFlags.length === 0 ? (
                             <div className="grid">
                                 <EmptyState filter={activeFilter} onCreateClick={onCreateClick} />
                             </div>
                         ) : (
                             <motion.div layout className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
                                 <AnimatePresence>
-                                    {filtered.map((quiz, i) => (
+                                    {filteredWithFlags.map((quiz, i) => (
                                         <QuizCard
                                             key={quiz.id_quiz}
                                             quiz={quiz}
                                             index={i}
                                             onAction={handleAction}
                                             onToggleFavorite={handleToggleFavorite}
+                                            isDeleting={deletingIds.includes(quiz.id_quiz)}
                                         />
                                     ))}
                                 </AnimatePresence>
@@ -602,6 +674,51 @@ const MyQuizzes = ({ currentUser, onClose, onCreateClick, onEditQuiz, onLaunchQu
                     >
                         <Share2 size={16} className="text-purple-400" />
                         Lien copié dans le presse-papier !
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            {/* ── Delete Confirmation Modal ── */}
+            <AnimatePresence>
+                {deleteCandidate && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 flex items-center justify-center"
+                        style={{ background: 'rgba(0,0,0,0.45)' }}
+                    >
+                        <motion.div
+                            initial={{ y: 20, opacity: 0, scale: 0.98 }}
+                            animate={{ y: 0, opacity: 1, scale: 1 }}
+                            exit={{ y: 20, opacity: 0, scale: 0.98 }}
+                            transition={{ duration: 0.18 }}
+                            className="max-w-md w-full rounded-2xl p-6"
+                            style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--glass-border)' }}
+                        >
+                            <h3 className="text-lg font-black mb-2" style={{ color: 'var(--text-primary)' }}>
+                                Supprimer le quiz ?
+                            </h3>
+                            <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
+                                Voulez-vous vraiment supprimer ce quiz ? Cette action est irréversible.
+                            </p>
+                            <div className="flex items-center gap-3 justify-end">
+                                <button
+                                    onClick={() => setDeleteCandidate(null)}
+                                    className="px-4 py-2 rounded-xl font-bold"
+                                    style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                >
+                                    Annuler
+                                </button>
+                                <motion.button
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={() => confirmDelete(deleteCandidate.id)}
+                                    className="px-5 py-2 rounded-xl font-black text-white"
+                                    style={{ background: 'linear-gradient(135deg, #ef4444, #f97316)' }}
+                                >
+                                    Supprimer
+                                </motion.button>
+                            </div>
+                        </motion.div>
                     </motion.div>
                 )}
             </AnimatePresence>
