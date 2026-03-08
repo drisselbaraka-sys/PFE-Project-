@@ -15,10 +15,30 @@ except Exception:
         import urllib.request as _urllib_request
         import urllib.error as _urllib_error
         _HTTP_LIB = 'urllib'
-from typing import List, Dict
+from typing import List, Dict, Optional
 from database.config import settings as app_settings
 
 # Model Configuration - T5 REMOVED to prioritize Qwen Cloud
+
+MAX_CONTEXT_CHARS = 32_000
+DEFAULT_BATCH_SIZE = 10
+
+
+def _safe_int(value, default):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _prepare_context(context: str, max_chars: int = MAX_CONTEXT_CHARS) -> str:
+    cleaned = (context or "").replace("\x00", " ").strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    # Garder début + fin (important pour docs longs)
+    head = int(max_chars * 0.7)
+    tail = max_chars - head
+    return f"{cleaned[:head]}\n\n[...]\n\n{cleaned[-tail:]}"
 
 
 def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]:
@@ -64,16 +84,24 @@ def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]
         })
     return questions
 
+
+def _is_valid_question(question: Dict) -> bool:
+    if not isinstance(question, dict):
+        return False
+    required = ["texte_question", "type_question", "options_reponses", "reponse_correcte"]
+    return all(question.get(field) for field in required)
+
+
 class AIService:
     @staticmethod
-    def generate_questions_qwen(context: str, settings: Dict) -> List[Dict]:
+    def generate_questions_qwen(context: str, settings: Dict, num_questions_override: Optional[int] = None) -> List[Dict]:
         """Genere des questions de haute qualite avec Qwen 2.5 72B via HF Router."""
         hf_token = app_settings.HF_TOKEN
         if not hf_token:
             print("WARNING: HF_TOKEN missing, falling back to T5")
             return None
             
-        num_questions = settings.get('num_questions', 5)
+        num_questions = num_questions_override or settings.get('num_questions', 5)
         difficulty = settings.get('difficulty', 'Moyen')
         language = settings.get('language', 'Français')
         question_type = settings.get('question_type', 'Mélangé')
@@ -158,7 +186,8 @@ STRUCTURE JSON :
    ]
 }}"""
 
-        user_content = f"Voici le texte académique source :\n\n{context[:12000]}"
+        prepared_context = _prepare_context(context)
+        user_content = f"Voici le texte académique source :\n\n{prepared_context}"
         
         payload = {
             "model": "Qwen/Qwen2.5-72B-Instruct",
@@ -166,7 +195,7 @@ STRUCTURE JSON :
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
             ],
-            "max_tokens": 4096,
+            "max_tokens": 6144,
             "temperature": 0.5, # Plus stable pour du JSON
             "response_format": {"type": "json_object"}
         }
@@ -180,15 +209,15 @@ STRUCTURE JSON :
             for attempt in range(max_retries):
                 try:
                     if _HTTP_LIB == 'httpx':
-                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=120.0)
+                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=160.0)
                     elif _HTTP_LIB == 'requests':
-                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=120.0)
+                        response = _http_lib.post(API_URL, headers=headers, json=payload, timeout=160.0)
                     else:
                         # urllib fallback
                         data = json.dumps(payload).encode('utf-8')
                         req = _urllib_request.Request(API_URL, data=data, headers=headers, method='POST')
                         try:
-                            with _urllib_request.urlopen(req, timeout=120) as resp:
+                            with _urllib_request.urlopen(req, timeout=160) as resp:
                                 resp_text = resp.read().decode('utf-8')
                                 class _RespObj:
                                     pass
@@ -276,27 +305,62 @@ STRUCTURE JSON :
     @staticmethod
     def generate_questions(context: str, settings: Dict) -> List[Dict]:
         """
-        Strategie de generation PFE:
-        1. Qwen 2.5 72B (Cloud HF) - Meilleure qualite
-        2. Extraction (Local CPU) - Backup ultime
+        Strategie de generation robuste :
+        1) Qwen en lot unique pour petits quiz
+        2) Qwen en batch pour gros volumes (ex: 30 questions expert)
+        3) Fallback extraction locale si API indisponible
         """
-        # 1. Essayer Qwen
-        questions = AIService.generate_questions_qwen(context, settings)
-        if questions and len(questions) > 0:
-            print(f" {len(questions)} questions generees avec succès par Qwen 72B!")
-            return questions
-            
-        # 2. Backup ultime : Extraction simple
-        print(" Fallback sur l'extraction intelligente (Qwen a echoue)...")
-        num_questions = settings.get('num_questions', 10)
-        
-        # Ensure metadata is at least present for router
+        requested_count = _safe_int(settings.get('num_questions', 10), 10)
+        requested_count = max(1, min(requested_count, 30))
+        settings['num_questions'] = requested_count
+
+        prepared_context = _prepare_context(context)
+
+        # Cas standard: peu de questions => un appel suffit
+        if requested_count <= DEFAULT_BATCH_SIZE:
+            questions = AIService.generate_questions_qwen(prepared_context, settings, num_questions_override=requested_count)
+            valid = [q for q in (questions or []) if _is_valid_question(q)]
+            if len(valid) >= requested_count:
+                print(f" {len(valid)} questions generees avec succès par Qwen 72B!")
+                return valid[:requested_count]
+
+        # Cas volumineux: batching
+        batch_size = min(DEFAULT_BATCH_SIZE, requested_count)
+        aggregated: List[Dict] = []
+        remaining = requested_count
+
+        while remaining > 0:
+            current_batch = min(batch_size, remaining)
+            batch_settings = dict(settings)
+            batch_questions = AIService.generate_questions_qwen(prepared_context, batch_settings, num_questions_override=current_batch)
+            valid_batch = [q for q in (batch_questions or []) if _is_valid_question(q)]
+            if not valid_batch:
+                print(f" [Qwen] Batch de {current_batch} questions non généré.")
+                break
+
+            aggregated.extend(valid_batch[:current_batch])
+            remaining = requested_count - len(aggregated)
+            if '_generated_metadata' in batch_settings and '_generated_metadata' not in settings:
+                settings['_generated_metadata'] = batch_settings['_generated_metadata']
+
+            # Réduire la taille des batches si l'API répond moins que demandé
+            if len(valid_batch) < current_batch and batch_size > 5:
+                batch_size = max(5, batch_size - 2)
+
+        if len(aggregated) >= requested_count:
+            print(f" {len(aggregated)} questions generees avec succès en mode batch Qwen!")
+            return aggregated[:requested_count]
+
+        # Backup ultime : Extraction simple
+        print(" Fallback sur l'extraction intelligente (Qwen a echoue ou incomplet)...")
         if '_generated_metadata' not in settings:
             settings['_generated_metadata'] = {
-                "titre": f"Quiz - {context[:30]}...",
+                "titre": f"Quiz - {prepared_context[:30]}...",
                 "description": "Généré par extraction automatique (fallback)",
                 "difficulty": settings.get('difficulty', 'Moyen')
             }
-            
-        return _generate_questions_fallback(context, num_questions)
+
+        fallback_needed = requested_count - len(aggregated)
+        fallback_questions = _generate_questions_fallback(prepared_context, fallback_needed)
+        return (aggregated + fallback_questions)[:requested_count]
 
