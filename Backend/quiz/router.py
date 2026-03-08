@@ -215,20 +215,9 @@ async def generate_quiz_ai(
 
             requested_questions = max(1, min(int(settings.get("num_questions", 10)), 30))
             file_count = len(files or [])
-            dynamic_timeout = min(300.0, 95.0 + requested_questions * 4 + file_count * 16)
-            print(f" [Quiz] Dynamic timeout: {dynamic_timeout}s for {requested_questions} questions and {file_count} file(s).")
+            print(f" [Quiz] Generating {requested_questions} question(s) from {file_count} file(s) (no forced route timeout).")
 
-            questions_data = await asyncio.wait_for(
-                asyncio.to_thread(AIService.generate_questions, context, settings),
-                timeout=dynamic_timeout
-            )
-        except asyncio.TimeoutError:
-            print(" [Quiz] Timeout cloud/global, bascule immédiate en fallback local.")
-            fallback_settings = dict(settings)
-            fallback_settings['force_fallback'] = True
-            questions_data = await asyncio.to_thread(AIService.generate_questions, context, fallback_settings)
-            if fallback_settings.get('_generated_metadata'):
-                settings['_generated_metadata'] = fallback_settings['_generated_metadata']
+            questions_data = await asyncio.to_thread(AIService.generate_questions, context, settings)
         except Exception as ai_err:
             raise HTTPException(status_code=500, detail=f"Erreur lors de la génération Qwen: {str(ai_err)}")
 

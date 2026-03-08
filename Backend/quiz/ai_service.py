@@ -21,10 +21,8 @@ from typing import List, Dict, Optional
 from database.config import settings as app_settings
 
 MAX_CONTEXT_CHARS = 45_000
-DEFAULT_BATCH_SIZE = 10
-QWEN_REQUEST_TIMEOUT = 80
+QWEN_REQUEST_TIMEOUT = 180
 QWEN_MAX_RETRIES = 3
-MAX_TOTAL_AI_SECONDS = 240
 
 
 def _safe_int(value, default):
@@ -38,11 +36,9 @@ def _prepare_context(context: str, max_chars: int = MAX_CONTEXT_CHARS) -> str:
     cleaned = (context or "").replace("\x00", " ").strip()
     if len(cleaned) <= max_chars:
         return cleaned
-    head = int(max_chars * 0.7)
+    head = int(max_chars * 0.72)
     tail = max_chars - head
     return f"{cleaned[:head]}\n\n[...]\n\n{cleaned[-tail:]}"
-
-
 
 
 def _strip_document_markers(context: str) -> str:
@@ -61,11 +57,11 @@ def _strip_document_markers(context: str) -> str:
 
 def _looks_like_noise(sentence: str) -> bool:
     s = sentence.strip()
-    if len(s) < 22:
+    if len(s) < 25:
         return True
     if re.search(r'(?:\.pdf|\.docx|\.txt|oct/char|nchar|long raw|www\.|http)', s, flags=re.IGNORECASE):
         return True
-    if sum(ch.isalpha() for ch in s) < 12:
+    if sum(ch.isalpha() for ch in s) < 14:
         return True
     words = [w for w in re.split(r"\s+", s) if w]
     if words:
@@ -76,34 +72,33 @@ def _looks_like_noise(sentence: str) -> bool:
 
 
 def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]:
-    """Fallback: génère des questions par extraction locale si Qwen échoue."""
+    """Fallback local basé sur des phrases utiles du contexte."""
     cleaned_context = _strip_document_markers(context)
     sentences = re.split(r'[.!?]+', cleaned_context)
     sentences = [
         s.strip()
         for s in sentences
-        if len(s.strip()) > 20 and "http" not in s and "www" not in s and not _looks_like_noise(s)
+        if len(s.strip()) > 30 and "http" not in s and "www" not in s and not _looks_like_noise(s)
     ]
 
     if not sentences:
-        sentences = [s.strip() for s in re.split(r'[.!?]+', cleaned_context) if len(s.strip()) > 0 and not _looks_like_noise(s)]
-        if not sentences:
-            raise ValueError("Contenu insuffisant pour générer des questions")
+        raise ValueError("Contenu insuffisant pour générer des questions")
 
     questions = []
-    start_idx = min(len(sentences) // 4, 10)
+    start_idx = min(len(sentences) // 5, 12)
     sentences_pool = sentences[start_idx:] or sentences
 
     for i in range(num_questions):
         sentence = sentences_pool[i % len(sentences_pool)]
-        q_text = f"Selon le contenu étudié, quelle affirmation est correcte à propos de : '{sentence[:80]}...' ?"
-        correct_answer = sentence[:120] if len(sentence) > 120 else sentence
+        statement = sentence[:140]
+        q_text = f"Dans le contexte fourni, quelle proposition est exacte concernant : '{statement}...' ?"
+        correct_answer = statement
 
         options = [
             correct_answer,
-            "Cette affirmation est contredite par le texte.",
-            "Le document ne mentionne pas cette information.",
-            "Il s'agit d'une interprétation erronée du sujet."
+            "Cette proposition contredit les éléments présentés dans le document.",
+            "Le document ne fournit pas d'information permettant cette conclusion.",
+            "Cette proposition mélange plusieurs notions de façon incorrecte."
         ]
 
         import random
@@ -114,57 +109,68 @@ def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]
             "type_question": "MCQ",
             "options_reponses": options,
             "reponse_correcte": correct_answer,
-            "explication": "Réponse extraite du corps du document.",
+            "explication": "La bonne réponse est directement soutenue par le contenu source.",
             "points": 1
         })
     return questions
 
 
+def _extract_topic(topic_text: str) -> str:
+    text = (topic_text or "").strip()
+    if not text:
+        return "Sujet technique"
+    first_line = text.splitlines()[0].strip()
+    return first_line[:120]
 
-def _generate_topic_questions_fallback(topic: str, num_questions: int) -> List[Dict]:
-    base_topic = (topic or "Sujet général").strip()
-    if len(base_topic) < 2:
-        base_topic = "Sujet général"
 
-    question_templates = [
-        f"Quelle est la définition la plus correcte de '{base_topic}' ?",
-        f"Quel est le rôle principal de '{base_topic}' dans un système d'information ?",
-        f"Parmi ces propositions, laquelle décrit le mieux un cas d'usage de '{base_topic}' ?",
-        f"Quel avantage est généralement associé à '{base_topic}' ?",
-        f"Quelle bonne pratique est pertinente lorsqu'on travaille avec '{base_topic}' ?",
-    ]
+def _generate_topic_questions_fallback(topic_text: str, num_questions: int) -> List[Dict]:
+    """Fallback minimal quand aucun contexte documentaire utile n'est disponible."""
+    topic = _extract_topic(topic_text)
+    lower = topic.lower()
 
-    options_templates = [
-        [
-            f"Un concept clé lié à {base_topic} avec une application concrète.",
-            "Une notion sans lien avec le sujet.",
-            "Une confusion entre deux technologies différentes.",
-            "Une affirmation incorrecte d'un point de vue technique.",
-        ],
-        [
-            f"Améliorer la qualité et la fiabilité autour de {base_topic}.",
-            "Supprimer complètement les validations.",
-            "Éviter toute documentation du processus.",
-            "Remplacer l'analyse par des suppositions.",
-        ],
-    ]
+    if "c" in lower and ("langage" in lower or lower == "c"):
+        seeds = [
+            ("En langage C, quel est l'impact principal d'un dépassement de tampon (buffer overflow) ?", "Comportement indéfini pouvant mener à des failles de sécurité et des plantages."),
+            ("Quelle différence clé existe entre allocation sur pile (stack) et allocation dynamique (heap) en C ?", "La stack est gérée automatiquement par la portée, le heap doit être géré manuellement (malloc/free)."),
+            ("Pourquoi `const` est-il utile dans la signature d'une fonction C ?", "Il protège les données contre les modifications involontaires et clarifie l'intention de l'API."),
+            ("Dans quel cas privilégier un pointeur plutôt qu'une copie de structure en C ?", "Pour éviter des copies coûteuses et manipuler efficacement de grands objets en mémoire."),
+        ]
+    elif "sql" in lower:
+        seeds = [
+            ("Dans SQL, pourquoi un index B-tree accélère-t-il certaines requêtes ?", "Il réduit le nombre de pages parcourues lors des opérations de recherche et de tri."),
+            ("Quelle différence conceptuelle entre `WHERE` et `HAVING` ?", "WHERE filtre les lignes avant agrégation; HAVING filtre les groupes après agrégation."),
+            ("Pourquoi normaliser une base relationnelle jusqu'à 3NF ?", "Pour réduire la redondance et limiter les anomalies d'insertion/mise à jour/suppression."),
+            ("Quand utiliser une transaction explicite avec COMMIT/ROLLBACK ?", "Quand plusieurs opérations doivent réussir ou échouer de manière atomique."),
+        ]
+    else:
+        seeds = [
+            (f"Quelle pratique permet d'assurer une meilleure fiabilité lors du développement autour de '{topic}' ?", "Valider les entrées, tester les cas limites et documenter clairement les hypothèses."),
+            (f"Quel est un indicateur de bonne conception technique pour '{topic}' ?", "Une séparation claire des responsabilités et une architecture maintenable."),
+            (f"Pourquoi l'observabilité est-elle importante pour '{topic}' en production ?", "Elle permet de diagnostiquer rapidement les anomalies et d'améliorer la qualité du service."),
+            (f"Quel est l'avantage d'une approche itérative pour implémenter '{topic}' ?", "Livrer progressivement, réduire les risques et intégrer le feedback tôt."),
+        ]
 
-    import random
     questions = []
+    import random
     for i in range(num_questions):
-        q_text = question_templates[i % len(question_templates)]
-        options = list(options_templates[i % len(options_templates)])
-        correct = options[0]
+        q_text, correct = seeds[i % len(seeds)]
+        options = [
+            correct,
+            "Ignorer les contraintes techniques et se fier uniquement à l'intuition.",
+            "Éviter toute mesure de qualité ou de performance.",
+            "Remplacer l'analyse du problème par des hypothèses non vérifiées.",
+        ]
         random.shuffle(options)
         questions.append({
             "texte_question": q_text,
             "type_question": "MCQ",
             "options_reponses": options,
             "reponse_correcte": correct,
-            "explication": f"La réponse correcte reflète les fondamentaux du sujet '{base_topic}'.",
+            "explication": f"Cette réponse est cohérente avec les principes techniques du sujet '{topic}'.",
             "points": 1
         })
     return questions
+
 
 def _is_valid_question(question: Dict) -> bool:
     if not isinstance(question, dict):
@@ -192,43 +198,17 @@ class AIService:
         difficulty = settings.get('difficulty', 'Moyen')
         language = settings.get('language', 'Français')
         question_type = settings.get('question_type', 'Mélangé')
-        tone = settings.get('tone', 'Fun')
-
-        diff_instructions = {
-            "Débutant": "Concepts de base, questions directes, distracteurs très évidents.",
-            "Moyen": "Nécessite une bonne compréhension du texte, distracteurs plausibles.",
-            "Expert": "Analyse critique, détails subtils, distracteurs sophistiqués."
-        }
-
-        tone_instructions = {
-            "Fun": "Style décontracté et motivant.",
-            "Académique": "Style formel et rigoureux.",
-            "Mystérieux": "Style intrigue/énigme."
-        }
-
-        show_immediate_feedback = settings.get('show_immediate_feedback', True)
+        tone = settings.get('tone', 'Académique')
 
         type_constraint = ""
         if question_type == "Vrai ou Faux":
-            type_constraint = (
-                "Toutes les questions doivent être de type 'Vrai ou Faux'. "
-                "options_reponses = [\"Vrai\", \"Faux\"], reponse_correcte = 'Vrai' ou 'Faux'."
-            )
+            type_constraint = "Toutes les questions: Vrai/Faux, options_reponses = [\"Vrai\", \"Faux\"]."
         elif question_type == "QCM":
-            type_constraint = "Toutes les questions doivent être des MCQ avec exactement 4 options."
+            type_constraint = "Toutes les questions: QCM avec exactement 4 options."
         elif question_type == "Plusieurs Réponses":
-            type_constraint = (
-                "Questions à choix multiples avec plusieurs réponses correctes. "
-                "options_reponses: 4 choix, reponse_correcte: liste de réponses exactes."
-            )
+            type_constraint = "Questions à réponses multiples: 4 options, reponse_correcte = liste de bonnes réponses."
         elif question_type == "Mélangé":
-            type_constraint = "Mélange QCM/VF/Multiple réponses de façon équilibrée."
-
-        feedback_instruction = (
-            "Correction immédiate activée: explications courtes et percutantes."
-            if show_immediate_feedback
-            else "Correction en fin de quiz: explications didactiques et détaillées."
-        )
+            type_constraint = "Mélanger QCM/Vrai-Faux/Plusieurs réponses de façon équilibrée."
 
         metadata_instructions = ""
         if settings.get('titre') and settings.get('titre').strip():
@@ -236,19 +216,20 @@ class AIService:
         if settings.get('description') and settings.get('description').strip():
             metadata_instructions += f"\n- CONTEXTE/DESCRIPTION : {settings.get('description')}"
 
-        system_prompt = f"""Tu es Antigravity-Quiz.
-Génère un quiz de qualité basé strictement sur le contenu fourni.{metadata_instructions}
+        system_prompt = f"""Tu es un expert senior en ingénierie pédagogique technique.
+Tu dois générer des questions précises, intelligentes, concrètes et professionnelles.{metadata_instructions}
 
-Contraintes strictes:
-- EXACTEMENT {num_questions} questions.
-- Ignore les noms de fichiers, marqueurs techniques et métadonnées; base-toi sur les idées métier/contenu réel.
+Contraintes:
+- EXACTEMENT {num_questions} questions
 - Langue: {language}
-- Difficulté: {difficulty} ({diff_instructions.get(difficulty, '')})
-- Ton: {tone} ({tone_instructions.get(tone, '')})
+- Difficulté: {difficulty}
+- Ton: {tone}
 - {type_constraint}
-- {feedback_instruction}
+- Interdit: questions vagues/génériques du type "définition simple" sans contexte.
+- Interdit: utiliser des noms de fichiers, marqueurs techniques d'extraction, lignes corrompues.
+- Les questions doivent tester la compréhension réelle (concepts, implications, choix techniques, pièges fréquents).
 
-Retourne UNIQUEMENT du JSON valide avec ce format:
+Retourne UNIQUEMENT du JSON valide:
 {{
   "titre": "...",
   "description": "...",
@@ -265,7 +246,7 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
 }}"""
 
         prepared_context = _prepare_context(_strip_document_markers(context))
-        user_content = f"Texte source:\n\n{prepared_context}"
+        user_content = f"Contenu source pour générer le quiz:\n\n{prepared_context}"
 
         payload = {
             "model": "Qwen/Qwen2.5-72B-Instruct",
@@ -273,8 +254,8 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
             ],
-            "max_tokens": 4096,
-            "temperature": 0.35,
+            "max_tokens": 7000,
+            "temperature": 0.25,
             "response_format": {"type": "json_object"}
         }
 
@@ -307,7 +288,7 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
                 if response.status_code != 200:
                     if response.status_code in [429, 500, 502, 503, 504]:
                         print(f" [Qwen] tentative {attempt+1}/{max_retries} échouée ({response.status_code})")
-                        time.sleep(0.6)
+                        time.sleep(1.0)
                         continue
                     print(f" [Qwen] erreur non-récupérable ({response.status_code}): {response.text}")
                     return None
@@ -336,7 +317,8 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
 
                 result = json.loads(content)
                 questions = result.get("questions", []) if isinstance(result, dict) else []
-                if not questions:
+                valid_questions = [q for q in questions if _is_valid_question(q)]
+                if not valid_questions:
                     continue
 
                 settings['_generated_metadata'] = {
@@ -344,8 +326,8 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
                     "description": result.get("description", ""),
                     "difficulty": difficulty
                 }
-                print(f" [Qwen] Generated {len(questions)}/{num_questions} questions")
-                return questions[:num_questions]
+                print(f" [Qwen] Generated {len(valid_questions)}/{num_questions} questions")
+                return valid_questions[:num_questions]
             except Exception as req_e:
                 print(f" [Qwen] erreur tentative {attempt+1}: {req_e}")
                 continue
@@ -354,12 +336,6 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
 
     @staticmethod
     def generate_questions(context: str, settings: Dict) -> List[Dict]:
-        """
-        Stratégie robuste et rapide:
-        1) Qwen avec budget temps court
-        2) Batching pour gros volumes si budget restant
-        3) Fallback local garanti (pas d'échec utilisateur)
-        """
         requested_count = _safe_int(settings.get('num_questions', 10), 10)
         requested_count = max(1, min(requested_count, 30))
         settings['num_questions'] = requested_count
@@ -367,66 +343,54 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
         prepared_context = _prepare_context(_strip_document_markers(context))
 
         if settings.get('force_fallback'):
-            print(" [AI] force_fallback activé.")
             try:
                 return _generate_questions_fallback(prepared_context, requested_count)
             except ValueError:
                 return _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), requested_count)
 
-        start_ts = time.monotonic()
-        aggregated: List[Dict] = []
-        batch_size = min(DEFAULT_BATCH_SIZE, requested_count)
+        # Tentative cloud principale: un seul appel complet pour garder la cohérence technique
+        questions = AIService.generate_questions_qwen(
+            prepared_context,
+            settings,
+            num_questions_override=requested_count,
+            request_timeout=QWEN_REQUEST_TIMEOUT,
+            max_retries=QWEN_MAX_RETRIES,
+        )
+        if questions and len(questions) >= max(3, min(requested_count, 8)):
+            if len(questions) < requested_count:
+                # compléter en fallback local si réponse partielle
+                missing = requested_count - len(questions)
+                try:
+                    questions += _generate_questions_fallback(prepared_context, missing)
+                except ValueError:
+                    questions += _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), missing)
+            return questions[:requested_count]
 
-        while len(aggregated) < requested_count:
-            elapsed = time.monotonic() - start_ts
-            if elapsed >= MAX_TOTAL_AI_SECONDS:
-                print(" [AI] Budget temps dépassé, fallback local pour compléter.")
-                break
-
-            current_batch = min(batch_size, requested_count - len(aggregated))
-
-            # Timeout court pour rester réactif
-            remaining_budget = max(8, int(MAX_TOTAL_AI_SECONDS - elapsed))
-            request_timeout = min(QWEN_REQUEST_TIMEOUT, remaining_budget)
-
-            batch_settings = dict(settings)
-            qwen_questions = AIService.generate_questions_qwen(
-                prepared_context,
-                batch_settings,
-                num_questions_override=current_batch,
-                request_timeout=request_timeout,
-                max_retries=QWEN_MAX_RETRIES,
-            )
-            valid_batch = [q for q in (qwen_questions or []) if _is_valid_question(q)]
-            if not valid_batch:
-                print(f" [AI] Batch Qwen vide pour {current_batch}, arrêt cloud.")
-                break
-
-            aggregated.extend(valid_batch[:current_batch])
-            if '_generated_metadata' in batch_settings and '_generated_metadata' not in settings:
-                settings['_generated_metadata'] = batch_settings['_generated_metadata']
-
-            # Si l'API renvoie moins que demandé, réduire la pression
-            if len(valid_batch) < current_batch and batch_size > 4:
-                batch_size = max(4, batch_size - 2)
-
-            # Limiter le nombre d'allers-retours pour accélérer
-            if requested_count > 15 and len(aggregated) >= requested_count:
-                break
-
-        if len(aggregated) >= requested_count:
-            return aggregated[:requested_count]
+        # Dernière chance cloud avec timeout plus grand (laisser l'IA prendre son temps)
+        questions_retry = AIService.generate_questions_qwen(
+            prepared_context,
+            settings,
+            num_questions_override=requested_count,
+            request_timeout=max(240, QWEN_REQUEST_TIMEOUT),
+            max_retries=2,
+        )
+        if questions_retry:
+            if len(questions_retry) < requested_count:
+                missing = requested_count - len(questions_retry)
+                try:
+                    questions_retry += _generate_questions_fallback(prepared_context, missing)
+                except ValueError:
+                    questions_retry += _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), missing)
+            return questions_retry[:requested_count]
 
         if '_generated_metadata' not in settings:
             settings['_generated_metadata'] = {
-                "titre": f"Quiz - {prepared_context[:30]}...",
-                "description": "Généré par extraction automatique (fallback)",
+                "titre": f"Quiz - {_extract_topic(prepared_context or settings.get('prompt', 'Document'))}",
+                "description": "Généré par fallback local",
                 "difficulty": settings.get('difficulty', 'Moyen')
             }
 
-        fallback_needed = requested_count - len(aggregated)
         try:
-            fallback_questions = _generate_questions_fallback(prepared_context, fallback_needed)
+            return _generate_questions_fallback(prepared_context, requested_count)
         except ValueError:
-            fallback_questions = _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), fallback_needed)
-        return (aggregated + fallback_questions)[:requested_count]
+            return _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), requested_count)
