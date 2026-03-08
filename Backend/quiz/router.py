@@ -199,7 +199,7 @@ async def generate_quiz_ai(
             print(f" [Quiz] Extracted text length: {len(extracted_text or '')} characters from uploaded files.")
             if not (extracted_text and extracted_text.strip()):
                 # If no text could be extracted, return a clear error to the frontend
-                raise HTTPException(status_code=400, detail="Aucun texte exploitable n'a été extrait des fichiers fournis. Veuillez coller le texte du document ou fournir un PDF/DOCX/TXT contenant du texte sélectionnable.")
+                raise HTTPException(status_code=400, detail="Aucun texte exploitable n'a été extrait. Le fichier est probablement scanné (image) ou protégé. Essayez un PDF avec texte sélectionnable, DOCX/TXT, ou ajoutez un prompt texte.")
 
         if not context.strip():
             raise HTTPException(status_code=400, detail="Veuillez fournir un texte ou un document.")
@@ -213,14 +213,22 @@ async def generate_quiz_ai(
                 snippet = ''
             print(f" [Quiz] Context length: {len(context or '')} chars. Snippet: {snippet}")
 
-            # Augmenter le timeout pour les appels réseau si nécessaire
+            requested_questions = max(1, min(int(settings.get("num_questions", 10)), 30))
+            file_count = len(files or [])
+            dynamic_timeout = min(180.0, 55.0 + requested_questions * 2 + file_count * 5)
+            print(f" [Quiz] Dynamic timeout: {dynamic_timeout}s for {requested_questions} questions and {file_count} file(s).")
+
             questions_data = await asyncio.wait_for(
                 asyncio.to_thread(AIService.generate_questions, context, settings),
-                timeout=180.0  # 3 minutes timeout pour Qwen 72B
+                timeout=dynamic_timeout
             )
         except asyncio.TimeoutError:
-            print(f" [Quiz] Timeout Qwen après 180 secondes")
-            raise HTTPException(status_code=504, detail="La génération Qwen a pris trop de temps. Veuillez réessayer.")
+            print(" [Quiz] Timeout cloud/global, bascule immédiate en fallback local.")
+            fallback_settings = dict(settings)
+            fallback_settings['force_fallback'] = True
+            questions_data = await asyncio.to_thread(AIService.generate_questions, context, fallback_settings)
+            if fallback_settings.get('_generated_metadata'):
+                settings['_generated_metadata'] = fallback_settings['_generated_metadata']
         except Exception as ai_err:
             raise HTTPException(status_code=500, detail=f"Erreur lors de la génération Qwen: {str(ai_err)}")
 
