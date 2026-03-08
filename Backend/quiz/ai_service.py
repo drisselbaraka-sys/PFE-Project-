@@ -20,11 +20,11 @@ except Exception:
 from typing import List, Dict, Optional
 from database.config import settings as app_settings
 
-MAX_CONTEXT_CHARS = 40_000
+MAX_CONTEXT_CHARS = 45_000
 DEFAULT_BATCH_SIZE = 10
-QWEN_REQUEST_TIMEOUT = 70
+QWEN_REQUEST_TIMEOUT = 80
 QWEN_MAX_RETRIES = 3
-MAX_TOTAL_AI_SECONDS = 170
+MAX_TOTAL_AI_SECONDS = 240
 
 
 def _safe_int(value, default):
@@ -61,12 +61,17 @@ def _strip_document_markers(context: str) -> str:
 
 def _looks_like_noise(sentence: str) -> bool:
     s = sentence.strip()
-    if len(s) < 35:
+    if len(s) < 22:
         return True
-    if re.search(r'(?:\.pdf|\.docx|\.txt|oct/char|nchar|raw|unicode)', s, flags=re.IGNORECASE):
+    if re.search(r'(?:\.pdf|\.docx|\.txt|oct/char|nchar|long raw|www\.|http)', s, flags=re.IGNORECASE):
         return True
-    if sum(ch.isalpha() for ch in s) < 20:
+    if sum(ch.isalpha() for ch in s) < 12:
         return True
+    words = [w for w in re.split(r"\s+", s) if w]
+    if words:
+        avg_len = sum(len(w) for w in words) / len(words)
+        if avg_len > 14:
+            return True
     return False
 
 
@@ -114,6 +119,52 @@ def _generate_questions_fallback(context: str, num_questions: int) -> List[Dict]
         })
     return questions
 
+
+
+def _generate_topic_questions_fallback(topic: str, num_questions: int) -> List[Dict]:
+    base_topic = (topic or "Sujet général").strip()
+    if len(base_topic) < 2:
+        base_topic = "Sujet général"
+
+    question_templates = [
+        f"Quelle est la définition la plus correcte de '{base_topic}' ?",
+        f"Quel est le rôle principal de '{base_topic}' dans un système d'information ?",
+        f"Parmi ces propositions, laquelle décrit le mieux un cas d'usage de '{base_topic}' ?",
+        f"Quel avantage est généralement associé à '{base_topic}' ?",
+        f"Quelle bonne pratique est pertinente lorsqu'on travaille avec '{base_topic}' ?",
+    ]
+
+    options_templates = [
+        [
+            f"Un concept clé lié à {base_topic} avec une application concrète.",
+            "Une notion sans lien avec le sujet.",
+            "Une confusion entre deux technologies différentes.",
+            "Une affirmation incorrecte d'un point de vue technique.",
+        ],
+        [
+            f"Améliorer la qualité et la fiabilité autour de {base_topic}.",
+            "Supprimer complètement les validations.",
+            "Éviter toute documentation du processus.",
+            "Remplacer l'analyse par des suppositions.",
+        ],
+    ]
+
+    import random
+    questions = []
+    for i in range(num_questions):
+        q_text = question_templates[i % len(question_templates)]
+        options = list(options_templates[i % len(options_templates)])
+        correct = options[0]
+        random.shuffle(options)
+        questions.append({
+            "texte_question": q_text,
+            "type_question": "MCQ",
+            "options_reponses": options,
+            "reponse_correcte": correct,
+            "explication": f"La réponse correcte reflète les fondamentaux du sujet '{base_topic}'.",
+            "points": 1
+        })
+    return questions
 
 def _is_valid_question(question: Dict) -> bool:
     if not isinstance(question, dict):
@@ -317,7 +368,10 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
 
         if settings.get('force_fallback'):
             print(" [AI] force_fallback activé.")
-            return _generate_questions_fallback(prepared_context, requested_count)
+            try:
+                return _generate_questions_fallback(prepared_context, requested_count)
+            except ValueError:
+                return _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), requested_count)
 
         start_ts = time.monotonic()
         aggregated: List[Dict] = []
@@ -371,5 +425,8 @@ Retourne UNIQUEMENT du JSON valide avec ce format:
             }
 
         fallback_needed = requested_count - len(aggregated)
-        fallback_questions = _generate_questions_fallback(prepared_context, fallback_needed)
+        try:
+            fallback_questions = _generate_questions_fallback(prepared_context, fallback_needed)
+        except ValueError:
+            fallback_questions = _generate_topic_questions_fallback(prepared_context or settings.get('prompt', ''), fallback_needed)
         return (aggregated + fallback_questions)[:requested_count]
