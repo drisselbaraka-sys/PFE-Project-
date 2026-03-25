@@ -14,18 +14,18 @@
   :root {
     --purple-glow: rgba(139, 92, 246, 0.15);
 
-    /* Light mode tokens */
-    --bg-base: #f9fafb;
-    --bg-surface: #ffffff;
-    --bg-elevated: #f3f4f6;
-    --border: #e5e7eb;
-    --text-primary: #111827;
-    --text-secondary: #6b7280;
-    --text-muted: #9ca3af;
-    --accent: #7c3aed;
-    --accent-soft: rgba(139, 92, 246, 0.12);
-    --glass-bg: rgba(255, 255, 255, 0.72);
-    --glass-border: rgba(255, 255, 255, 0.5);
+    /* Light mode tokens - Beautiful soft grays instead of stark white */
+    --bg-base: #e8eef4;
+    --bg-surface: #f8fafc;
+    --bg-elevated: #e2e8f0;
+    --border: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --text-muted: #475569;
+    --accent: #6366f1;
+    --accent-soft: rgba(99, 102, 241, 0.12);
+    --glass-bg: rgba(248, 250, 252, 0.72);
+    --glass-border: rgba(148, 163, 184, 0.3);
   }
 
   html.dark {
@@ -68,6 +68,11 @@
 }
 
 @layer components {
+  .enthusiast-gradient {
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%) !important;
+    color: #ffffff !important;
+  }
+
 
   /* ── Header glass ── */
   .glass-header {

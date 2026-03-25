@@ -24,14 +24,12 @@ def create_quiz_manual(
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
-    # Determine type: use the one embedded in parametres_generation if present, else 'manual'
     type_creation = 'manual'
     if quiz_data.parametres_generation:
         type_from_params = quiz_data.parametres_generation.get('type_creation', '').lower()
         if type_from_params in ('ai', 'manual'):
             type_creation = type_from_params
 
-    # 1. Create Quiz record
     new_quiz = models.Quiz(
         **quiz_data.dict(exclude={'questions', 'type_creation'}),
         id_utilisateur=current_user.id_utilisateur,
@@ -40,7 +38,6 @@ def create_quiz_manual(
     db.add(new_quiz)
     db.flush()
 
-    # 2. Create Questions
     for i, q_data in enumerate(quiz_data.questions):
         new_q = models.Question(
             **q_data.dict(),
@@ -48,7 +45,7 @@ def create_quiz_manual(
             ordre_dans_quiz=i
         )
         db.add(new_q)
-    
+
     db.commit()
     db.refresh(new_quiz)
     return new_quiz
@@ -61,17 +58,14 @@ def update_quiz(
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
-    # 1. Verify existence and ownership
     quiz = db.query(models.Quiz).filter(
         models.Quiz.id_quiz == quiz_id,
         models.Quiz.id_utilisateur == current_user.id_utilisateur
     ).first()
-    
+
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz non trouvé ou accès refusé.")
 
-    # 2. Update Quiz metadata
-    # Ensure type_creation is handled: favor explicit payload if it matches 'ai'/'manual'
     type_creation = quiz.type_creation
     if quiz_data.type_creation in ('ai', 'manual'):
         type_creation = quiz_data.type_creation
@@ -83,12 +77,11 @@ def update_quiz(
     update_data = quiz_data.dict(exclude={'questions', 'type_creation'})
     for key, value in update_data.items():
         setattr(quiz, key, value)
-    
+
     quiz.type_creation = type_creation
-    
-    # 3. Handle Questions: Delete old ones and insert new ones (simpler than syncing)
+
     db.query(models.Question).filter(models.Question.id_quiz == quiz_id).delete()
-    
+
     for i, q_data in enumerate(quiz_data.questions):
         new_q = models.Question(
             **q_data.dict(),
@@ -96,7 +89,7 @@ def update_quiz(
             ordre_dans_quiz=i
         )
         db.add(new_q)
-    
+
     db.commit()
     db.refresh(quiz)
     return quiz
@@ -108,19 +101,15 @@ def delete_quiz(
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
-    # Verify existence and ownership
     quiz = db.query(models.Quiz).filter(
         models.Quiz.id_quiz == quiz_id,
         models.Quiz.id_utilisateur == current_user.id_utilisateur
     ).first()
-    
+
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz non trouvé ou accès refusé.")
-    
-    # Delete related Questions (Cascading should handle this, but explicitly doing it ensures it)
+
     db.query(models.Question).filter(models.Question.id_quiz == quiz_id).delete()
-    
-    # Delete the quiz
     db.delete(quiz)
     db.commit()
     return None
@@ -150,10 +139,12 @@ async def upload_thumbnail(
     url = f"http://localhost:8001/uploads/thumbnails/{filename}"
     return {"image_couverture_url": url}
 
+
 @router.post("/generate/ai", response_model=schemas.AIDraftResponse)
 async def generate_quiz_ai(
     files: Optional[List[UploadFile]] = File(None),
     settings_json: str = Form(...),
+    db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
     """
@@ -169,7 +160,7 @@ async def generate_quiz_ai(
         if files:
             if len(files) > 5:
                 raise HTTPException(status_code=400, detail="Maximum 5 fichiers autorisés.")
-            
+
             docs_dir = os.path.join("uploads", "documents")
             os.makedirs(docs_dir, exist_ok=True)
             import uuid as _uuid
@@ -177,83 +168,102 @@ async def generate_quiz_ai(
             file_data = []
             for file in files:
                 content = await file.read()
+                if len(content) > 20 * 1024 * 1024:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Le fichier {file.filename} dépasse la limite de 20 Mo."
+                    )
+
                 file_data.append((file.filename, content))
 
-                # Save the file permanently for editing
                 ext = os.path.splitext(file.filename)[1].lower()
                 safe_filename = f"doc_{_uuid.uuid4().hex}{ext}"
                 filepath = os.path.join(docs_dir, safe_filename)
                 with open(filepath, "wb") as f:
                     f.write(content)
-                
-                # We assume the frontend and backend run on same host, or backend URL is known
-                # In production, this should be configurable
+
                 file_url = f"http://localhost:8001/uploads/documents/{safe_filename}"
+                
+                # Create a database record for the document
+                new_doc = models.Document(
+                    nom_fichier=file.filename,
+                    chemin_stockage=filepath,
+                    type_fichier=ext.replace('.', '') if ext else 'bin',
+                    taille_fichier=len(content),
+                    id_utilisateur=current_user.id_utilisateur
+                )
+                db.add(new_doc)
+                db.flush() # Get id_document
+
                 saved_documents.append({
+                    "id": new_doc.id_document,
                     "name": file.filename,
                     "url": file_url
                 })
-            
+
+            # DocumentService now handles OCR automatically for scanned PDFs
+            # — do NOT block here if extraction returns empty, OCR may have run
             extracted_text = DocumentService.process_files(file_data)
             context = extracted_text + "\n\n" + context
-            print(f" [Quiz] Extracted text length: {len(extracted_text or '')} characters from uploaded files.")
-            if not (extracted_text and extracted_text.strip()):
-                # If no text could be extracted, return a clear error to the frontend
-                raise HTTPException(status_code=400, detail="Aucun texte exploitable n'a été extrait. Le fichier est probablement scanné (image) ou protégé. Essayez un PDF avec texte sélectionnable, DOCX/TXT, ou ajoutez un prompt texte.")
+
+            # Only block if BOTH extracted text AND prompt are empty
+            if not context.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Aucun texte exploitable n'a été extrait et aucun prompt fourni. "
+                        "Essayez un PDF avec texte sélectionnable, DOCX/TXT, "
+                        "ou ajoutez un prompt texte décrivant le sujet."
+                    )
+                )
 
         if not context.strip():
             raise HTTPException(status_code=400, detail="Veuillez fournir un texte ou un document.")
 
-        # 2. Call AI Service (Qwen 72B - Cloud API)
+        # 2. Call AI Service
         try:
-            # Log snippet/length of context sent to AI for debugging
-            try:
-                snippet = (context[:800] + '...') if len(context) > 800 else context
-            except Exception:
-                snippet = ''
-            print(f" [Quiz] Context length: {len(context or '')} chars. Snippet: {snippet}")
-
             requested_questions = max(1, min(int(settings.get("num_questions", 10)), 30))
             file_count = len(files or [])
-            dynamic_timeout = min(420.0, 120.0 + requested_questions * 6 + file_count * 12)
-            print(f" [Quiz] Dynamic timeout: {dynamic_timeout}s for {requested_questions} questions and {file_count} file(s).")
 
-            questions_data = await asyncio.wait_for(
-                asyncio.to_thread(AIService.generate_questions, context, settings),
-                timeout=dynamic_timeout
-            )
-        except asyncio.TimeoutError:
-            print(f" [Quiz] Timeout Qwen après le délai dynamique")
-            raise HTTPException(status_code=504, detail="La génération a dépassé le délai autorisé. Réessayez avec moins de fichiers ou un prompt plus ciblé.")
+            subject = settings.get("titre") or settings.get("prompt", "Document")
+            print(f"\n--- [Quiz Request] ---")
+            print(f" Sujet     : {subject[:100]}")
+            print(f" Questions : {requested_questions}")
+            print(f" Documents : {file_count}")
+            print(f" Contexte  : {len(context)} chars")
+            print(f"----------------------\n")
+
+            questions_data = await asyncio.to_thread(AIService.generate_questions, context, settings)
+
         except Exception as ai_err:
-            raise HTTPException(status_code=500, detail=f"Erreur lors de la génération Qwen: {str(ai_err)}")
+            raise HTTPException(status_code=500, detail=f"Erreur lors de la génération: {str(ai_err)}")
 
         if not questions_data:
             raise HTTPException(status_code=500, detail="L'IA n'a pas pu générer de questions.")
 
-        # 3. Return as a draft (No DB save yet)
-        # Extract title/description from Qwen metadata if available
+        # 3. Return as draft (no Quiz DB save yet, but Documents are already in DB)
         qwen_meta = settings.get('_generated_metadata', {})
         suggested_title = qwen_meta.get("titre") or f"Quiz - {settings.get('prompt', 'Document')[:30]}"
-        suggested_desc = qwen_meta.get("description") or "Généré par IA Qwen 2.5 72B"
+        suggested_desc  = qwen_meta.get("description") or "Généré par IA"
+        
+        # Link the first document as main source if available
+        main_doc_id = saved_documents[0]["id"] if saved_documents else None
 
         return {
             "questions": questions_data,
             "metadata": {
-                "titre": suggested_title,
-                "description": suggested_desc,
-                "saved_documents": saved_documents
+                "titre":           suggested_title,
+                "description":     suggested_desc,
+                "saved_documents": saved_documents,
+                "id_document":     main_doc_id
             }
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f" [Quiz] Erreur générale dans generate_quiz_ai: {e}")
+        print(f"[Quiz] Erreur générale dans generate_quiz_ai: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
-
-
-
 
 
 @router.get("/me", response_model=List[schemas.QuizSummary])
@@ -261,7 +271,7 @@ def get_user_quizzes(
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
-    """Returns all quizzes created by the current user, enriched with question count and favorite status."""
+    """Returns all quizzes created by the current user."""
     quizzes = db.query(models.Quiz).filter(
         models.Quiz.id_utilisateur == current_user.id_utilisateur
     ).order_by(models.Quiz.date_creation.desc()).all()
@@ -270,7 +280,6 @@ def get_user_quizzes(
 
     result = []
     for quiz in quizzes:
-        # normalize peut_etre_clone: if missing or NULL, default to True
         _peut_clone = getattr(quiz, 'peut_etre_clone', None)
         if _peut_clone is None:
             _peut_clone = True
@@ -287,11 +296,32 @@ def get_user_quizzes(
             tags=quiz.tags if quiz.tags is not None else [],
             image_couverture_url=quiz.image_couverture_url,
             type_creation=quiz.type_creation,
+            id_document=quiz.id_document,
+            parametres_generation=quiz.parametres_generation if quiz.parametres_generation is not None else {},
             date_creation=quiz.date_creation,
             nombre_questions=len(quiz.questions),
             is_favorited=quiz.id_quiz in liked_ids,
         ))
     return result
+
+
+@router.post("/translate/manual", response_model=schemas.ManualQuizTranslateResponse)
+def translate_manual_quiz(
+    payload: schemas.ManualQuizTranslateRequest,
+    current_user: models.Utilisateur = Depends(get_current_user)
+):
+    try:
+        translated = AIService.translate_manual_quiz(
+            {
+                "titre": payload.titre or "",
+                "description": payload.description or "",
+                "questions": [question.dict() for question in payload.questions],
+            },
+            payload.target_language,
+        )
+        return translated
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de traduction du quiz: {str(e)}")
 
 
 @router.get("/{quiz_id}", response_model=schemas.QuizResponse)
@@ -305,10 +335,10 @@ def get_quiz(
         models.Quiz.id_quiz == quiz_id,
         models.Quiz.id_utilisateur == current_user.id_utilisateur
     ).first()
-    
+
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz introuvable ou accès refusé.")
-    # Ensure peut_etre_clone is not None to satisfy response schema boolean
+
     if getattr(quiz, 'peut_etre_clone', None) is None:
         quiz.peut_etre_clone = True
     return quiz
@@ -320,7 +350,7 @@ def toggle_favorite(
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
 ):
-    """Toggle the favorite (like) status of a quiz for the current user."""
+    """Toggle the favorite status of a quiz for the current user."""
     quiz = db.query(models.Quiz).filter(models.Quiz.id_quiz == quiz_id).first()
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz introuvable.")
@@ -337,7 +367,7 @@ def toggle_favorite(
 
 
 @router.delete("/{quiz_id}")
-def delete_quiz(
+def delete_quiz_alt(
     quiz_id: str,
     db: Session = Depends(get_db),
     current_user: models.Utilisateur = Depends(get_current_user)
@@ -352,4 +382,3 @@ def delete_quiz(
     db.delete(quiz)
     db.commit()
     return {"detail": "Quiz supprimé avec succès."}
-

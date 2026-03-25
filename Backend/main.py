@@ -15,6 +15,7 @@ from database.database import engine, Base
 import database.models
 from auth.router import router as auth_router
 from quiz.router import router as quiz_router
+from session.router import router as session_router
 from fastapi.staticfiles import StaticFiles
 
 # Créer le dossier uploads s'il n'existe pas
@@ -65,6 +66,7 @@ app.add_middleware(
 # Routers
 app.include_router(auth_router)
 app.include_router(quiz_router)
+app.include_router(session_router)
 
 # Monter le dossier uploads pour servir les fichiers statiques
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

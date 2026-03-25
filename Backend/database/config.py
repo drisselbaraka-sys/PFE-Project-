@@ -16,6 +16,12 @@ class Settings:
 
     # Autres
     HF_TOKEN: str = os.getenv("HF_TOKEN")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY")
+    GROQ_MODEL_ID: str = os.getenv("GROQ_MODEL_ID", "llama-3.3-70b-versatile")
+    GROQ_MODEL_FALLBACKS: str = os.getenv(
+        "GROQ_MODEL_FALLBACKS",
+        "llama-3.1-8b-instant"
+    )
     SECRET_KEY: str = os.getenv("SECRET_KEY", "fallback-secret-key")
     ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))

@@ -100,8 +100,8 @@ const Header = ({ onSearchFocusChange, onOpenAuth, currentUser, onLogout, onCrea
                         {/* Outer Gradient Hover Layer (for border) */}
                         <div className="absolute inset-0 bg-linear-to-r from-violet-600 to-orange-500 opacity-0 group-hover:opacity-100 transition-all duration-300 rounded-2xl" />
 
-                        {/* Inner White Hover Layer */}
-                        <div className="absolute inset-[2px] bg-white opacity-0 group-hover:opacity-100 transition-all duration-300 rounded-[10px]" />
+                        {/* Inner Hover Layer */}
+                        <div className="absolute inset-[2px] opacity-0 group-hover:opacity-100 transition-all duration-300 rounded-[10px]" style={{ backgroundColor: 'var(--glass-bg)' }} />
 
                         {/* Content */}
                         <div className="relative flex items-center gap-2">
@@ -111,6 +111,7 @@ const Header = ({ onSearchFocusChange, onOpenAuth, currentUser, onLogout, onCrea
                             </span>
                         </div>
                     </motion.button>
+
                 </div>
 
                 {/* Right: Auth */}

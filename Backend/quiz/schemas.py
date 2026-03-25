@@ -72,3 +72,16 @@ class AIDraftMetadata(BaseModel):
 class AIDraftResponse(BaseModel):
     questions: List[dict] = Field(default_factory=list)  # Flexibility for draft questions
     metadata: AIDraftMetadata
+
+
+class ManualQuizTranslateRequest(BaseModel):
+    titre: Optional[str] = ""
+    description: Optional[str] = ""
+    questions: List[QuestionCreate]
+    target_language: str = "Français"
+
+
+class ManualQuizTranslateResponse(BaseModel):
+    titre: str
+    description: str
+    questions: List[dict] = Field(default_factory=list)

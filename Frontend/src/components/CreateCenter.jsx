@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-    X, Sparkles, FileText, Plus, Users,
+    X, Sparkles, FileText, Plus, Users, ArrowLeft,
     ArrowRight, Upload, ChevronRight, Settings,
-    Clock, Trophy, Eye, Image as ImageIcon,
+    Clock, Trophy, Image as ImageIcon,
     Check, Rocket, Brain, Lock, Globe, Share2, Tag, Play, Download
 } from 'lucide-react';
 import api from '../utils/api';
@@ -30,12 +30,13 @@ const TypographyStyle = () => (
 
 
 
-const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
+const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunchLiveSession, onJoinLiveSession }) => {
     const [step, setStep] = useState(editingQuiz ? 'manual_editor' : 'main_choice');
     const [creationMode, setCreationMode] = useState(editingQuiz ? 'manual' : null);
     const [isSession, setIsSession] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [generatedQuizId, setGeneratedQuizId] = useState(null);
+    const [manualLanguage, setManualLanguage] = useState('Français');
 
     // Quiz Metadata
     const [quizData, setQuizData] = useState({
@@ -50,9 +51,13 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
     });
 
     const [questions, setQuestions] = useState([]);
+    const [optionCount, setOptionCount] = useState(2);
     const [aiInput, setAiInput] = useState('');
     const [aiProgress, setAiProgress] = useState(0);
     const [aiLoadingMessage, setAiLoadingMessage] = useState("L'IA prépare son cerveau...");
+    const [sessionJoinCode, setSessionJoinCode] = useState('');
+    const [isJoiningSession, setIsJoiningSession] = useState(false);
+    const [joinSessionError, setJoinSessionError] = useState('');
 
     // AI Specific Settings
     const [aiSettings, setAiSettings] = useState({
@@ -67,8 +72,71 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
     });
     const [files, setFiles] = useState([]);
     const [savedDocuments, setSavedDocuments] = useState([]);
+    const [aiConfigBaseline, setAiConfigBaseline] = useState(null);
     const [thumbnailFile, setThumbnailFile] = useState(null); // Raw File object for server upload
     const fileInputRef = useRef(null);
+    const abortControllerRef = useRef(null);
+
+    function getCorrectIndexes(question) {
+        const options = Array.isArray(question?.options_reponses) ? question.options_reponses : [];
+        const maxIndex = options.length - 1;
+
+        let indexes = [];
+        if (Array.isArray(question?.reponses_correctes_idx)) {
+            indexes = question.reponses_correctes_idx.filter(i => Number.isInteger(i));
+        } else {
+            const rawCorrect = question?.reponse_correcte;
+            const correctValues = Array.isArray(rawCorrect) ? rawCorrect : [rawCorrect];
+            indexes = correctValues
+                .map((value) => options.findIndex(opt => opt === value))
+                .filter(i => i >= 0);
+        }
+
+        const uniqueIndexes = [...new Set(indexes)].filter(i => i >= 0 && i <= maxIndex);
+        const optionLength = options.length;
+
+        if (optionLength <= 0) return [];
+        if (uniqueIndexes.length === 0) return [0];
+
+        const maxSelectable = Math.max(1, optionLength - 1);
+        if (uniqueIndexes.length > maxSelectable) {
+            return uniqueIndexes.slice(0, maxSelectable);
+        }
+        return uniqueIndexes;
+    }
+
+    function normalizeManualQuestion(question) {
+        const options = Array.isArray(question?.options_reponses) ? question.options_reponses : [];
+        const correctIndexes = getCorrectIndexes(question);
+        const correctTexts = correctIndexes
+            .map((index) => options[index])
+            .filter((value) => value !== undefined);
+
+        return {
+            ...question,
+            type_question: correctTexts.length > 1 ? 'Multiple' : 'MCQ',
+            reponses_correctes_idx: correctIndexes,
+            reponse_correcte: correctTexts.length > 1 ? correctTexts : (correctTexts[0] ?? ''),
+        };
+    }
+
+    function createManualQuestion(count) {
+        return normalizeManualQuestion({
+            texte_question: '',
+            type_question: 'MCQ',
+            options_reponses: Array.from({ length: count }, () => ''),
+            reponse_correcte: '',
+            reponses_correctes_idx: [0],
+            explication: '',
+            points: 1
+        });
+    }
+
+    function sanitizeQuestionForApi(question) {
+        const normalized = normalizeManualQuestion(question);
+        const { reponses_correctes_idx, ...cleaned } = normalized;
+        return cleaned;
+    }
 
     // ── INITIALIZE EDIT MODE ──
     useEffect(() => {
@@ -86,21 +154,69 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 peut_etre_clone: editingQuiz.peut_etre_clone ?? true,
                 parametres_generation: editingQuiz.parametres_generation || {}
             });
-            setQuestions(editingQuiz.questions || []);
+            const initialQuestions = editingQuiz.questions || [];
+            setQuestions(isAI ? initialQuestions : initialQuestions.map(normalizeManualQuestion));
+            const initialOptionCount = Math.min(6, Math.max(2, editingQuiz.questions?.[0]?.options_reponses?.length || 2));
+            setOptionCount(initialOptionCount);
+            setManualLanguage(editingQuiz.parametres_generation?.language || 'Français');
+            if (!isAI && typeof editingQuiz.parametres_generation?.show_immediate_feedback === 'boolean') {
+                setAiSettings(prev => ({
+                    ...prev,
+                    show_immediate_feedback: editingQuiz.parametres_generation.show_immediate_feedback
+                }));
+            }
 
             if (isAI && editingQuiz.parametres_generation) {
-                setAiSettings({
+                const mergedAiSettings = {
                     ...aiSettings,
                     ...editingQuiz.parametres_generation
-                });
-                setAiInput(editingQuiz.parametres_generation.prompt || '');
-                setSavedDocuments(editingQuiz.parametres_generation.saved_documents || []);
+                };
+                const existingPrompt = editingQuiz.parametres_generation.prompt || '';
+                const existingSavedDocs = editingQuiz.parametres_generation.saved_documents || [];
+
+                setAiSettings(mergedAiSettings);
+                setAiInput(existingPrompt);
+                setSavedDocuments(existingSavedDocs);
+                setAiConfigBaseline(buildAIConfigSnapshot({
+                    quizState: {
+                        titre: editingQuiz.titre || '',
+                        description: editingQuiz.description || '',
+                        visibilite: editingQuiz.visibilite || 'public',
+                        peut_etre_clone: editingQuiz.peut_etre_clone ?? true,
+                        tags: editingQuiz.tags || [],
+                        image_couverture_url: editingQuiz.image_couverture_url || '',
+                    },
+                    inputState: existingPrompt,
+                    aiSettingsState: mergedAiSettings,
+                    savedDocsState: existingSavedDocs,
+                    filesState: [],
+                    thumbnailState: null,
+                }));
+            } else {
+                setAiConfigBaseline(null);
             }
 
             setCreationMode(isAI ? 'ai_prompt' : 'manual');
             setStep(isAI ? 'ai_config' : 'manual_editor');
         }
     }, [editingQuiz]);
+
+    const applyOptionCountToQuestions = (count) => {
+        setQuestions(prev => prev.map((question) => {
+            const updatedOptions = Array.from({ length: count }, (_, index) => question.options_reponses?.[index] ?? '');
+            return normalizeManualQuestion({
+                ...question,
+                options_reponses: updatedOptions,
+            });
+        }));
+    };
+
+    const handleOptionCountChange = (rawValue) => {
+        const parsedValue = Number.parseInt(rawValue, 10);
+        const nextCount = Math.min(6, Math.max(2, Number.isNaN(parsedValue) ? 2 : parsedValue));
+        setOptionCount(nextCount);
+        applyOptionCountToQuestions(nextCount);
+    };
 
     const handleFileChange = (e) => {
         const selectedFiles = Array.from(e.target.files);
@@ -115,7 +231,78 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
         setFiles(files.filter((_, i) => i !== index));
     };
 
+    const handleRemoveSavedDocument = (index) => {
+        setSavedDocuments(prev => prev.filter((_, i) => i !== index));
+    };
+
     const aiSourceTab = useState('prompt'); // prompt, document
+
+    const buildAIConfigSnapshot = ({
+        quizState = quizData,
+        inputState = aiInput,
+        aiSettingsState = aiSettings,
+        savedDocsState = savedDocuments,
+        filesState = files,
+        thumbnailState = thumbnailFile,
+    } = {}) => ({
+        quizData: {
+            titre: quizState?.titre || '',
+            description: quizState?.description || '',
+            visibilite: quizState?.visibilite || 'public',
+            peut_etre_clone: !!quizState?.peut_etre_clone,
+            tags: Array.isArray(quizState?.tags) ? quizState.tags.map(tag => String(tag || '').trim()).filter(Boolean) : [],
+            image_couverture_url: quizState?.image_couverture_url || '',
+        },
+        aiInput: String(inputState || '').trim(),
+        aiSettings: {
+            num_questions: aiSettingsState?.num_questions,
+            difficulty: aiSettingsState?.difficulty,
+            language: aiSettingsState?.language,
+            tone: aiSettingsState?.tone,
+            question_type: aiSettingsState?.question_type,
+            time_mode: aiSettingsState?.time_mode,
+            time_value: aiSettingsState?.time_value,
+            show_immediate_feedback: !!aiSettingsState?.show_immediate_feedback,
+        },
+        savedDocuments: (savedDocsState || []).map(doc => ({
+            id: doc?.id || '',
+            name: doc?.name || '',
+            url: doc?.url || '',
+        })),
+        files: (filesState || []).map(file => ({
+            name: file?.name || '',
+            size: file?.size || 0,
+            type: file?.type || '',
+        })),
+        hasPendingThumbnail: !!thumbnailState,
+    });
+
+    const isEditingAI = !!editingQuiz && (creationMode || '').startsWith('ai');
+    const hasGenerationSource = !!(String(aiInput || '').trim() || files.length > 0 || savedDocuments.length > 0);
+
+    const hasAIConfigChanges = useMemo(() => {
+        if (!isEditingAI || !aiConfigBaseline) return false;
+        const current = buildAIConfigSnapshot();
+        return JSON.stringify(current) !== JSON.stringify(aiConfigBaseline);
+    }, [
+        isEditingAI,
+        aiConfigBaseline,
+        quizData,
+        aiInput,
+        aiSettings,
+        savedDocuments,
+        files,
+        thumbnailFile,
+    ]);
+
+    const canRegenerate = !!(quizData.titre && hasGenerationSource && (!isEditingAI || hasAIConfigChanges));
+    const hasIncompleteManualQuestions = questions.some((question) => {
+        const questionText = String(question?.texte_question || '').trim();
+        const options = Array.isArray(question?.options_reponses) ? question.options_reponses : [];
+        if (!questionText || options.length < 2) return true;
+        return options.some((option) => !String(option || '').trim());
+    });
+    const canSubmitManualQuiz = !!(String(quizData.titre || '').trim() && questions.length > 0 && !hasIncompleteManualQuestions);
 
     const aiMessages = [
         "L'IA prépare son cerveau...",
@@ -124,6 +311,18 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
         "Génération des explications lumineuses...",
         "Polissage des diamants pédagogiques..."
     ];
+
+    const fetchSavedDocumentAsFile = async (doc) => {
+        const response = await fetch(doc.url);
+        if (!response.ok) {
+            throw new Error(`Impossible de charger le document: ${doc.name || doc.url}`);
+        }
+        const blob = await response.blob();
+        const filename = doc.name || 'document';
+        const mimeType = blob.type || 'application/octet-stream';
+        return new File([blob], filename, { type: mimeType });
+    };
+
     const handleAIGenerate = async () => {
         // Vérifier que l'utilisateur est connecté
         const token = localStorage.getItem('qvibe_token');
@@ -132,7 +331,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
             return;
         }
 
-        if (!aiInput.trim() && files.length === 0) {
+        if (!aiInput.trim() && files.length === 0 && savedDocuments.length === 0) {
             alert("❌ Veuillez entrer un texte ou charger un document avant de générer.");
             return;
         }
@@ -158,6 +357,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 prompt: aiInput,
                 num_questions: aiSettings.num_questions,
                 difficulty: aiSettings.difficulty,
+                language: aiSettings.language,
                 question_type: aiSettings.question_type,
                 time_mode: aiSettings.time_mode,
                 time_value: aiSettings.time_value,
@@ -168,9 +368,25 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
             const formData = new FormData();
             formData.append('settings_json', JSON.stringify(settingsPayload));
 
-            files.forEach(file => formData.append('files', file));
+            const requestFiles = [...files];
+            if (files.length === 0 && savedDocuments.length > 0) {
+                const restoredFiles = await Promise.all(savedDocuments.map(fetchSavedDocumentAsFile));
+                requestFiles.push(...restoredFiles);
+            }
 
-            const response = await api.post('/quiz/generate/ai', formData);
+            if (requestFiles.length > 5) {
+                alert("❌ Maximum 5 documents autorisés pour la génération.");
+                setIsLoading(false);
+                setAiProgress(0);
+                return;
+            }
+
+            requestFiles.forEach(file => formData.append('files', file));
+
+            abortControllerRef.current = new AbortController();
+            const response = await api.post('/quiz/generate/ai', formData, {
+                signal: abortControllerRef.current.signal
+            });
             console.log(" [AI Draft Response]", response);
 
             const generatedQuestions = response.questions || response.data?.questions;
@@ -181,13 +397,28 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 setQuestions(generatedQuestions);
 
                 // Pre-fill metadata if suggested and current is empty
-                setQuizData(prev => ({
-                    ...prev,
-                    titre: prev.titre || suggestedMeta?.titre || '',
-                    description: prev.description || suggestedMeta?.description || ''
-                }));
+                const mergedQuizData = {
+                    ...quizData,
+                    titre: quizData.titre || suggestedMeta?.titre || '',
+                    description: quizData.description || suggestedMeta?.description || ''
+                };
+                setQuizData(mergedQuizData);
+
+                if (isSession) {
+                    await handlePublish({
+                        launchAfterPublish: true,
+                        forcedQuestions: generatedQuestions,
+                        forcedQuizData: mergedQuizData,
+                    });
+                    return;
+                }
 
                 setStep('review_generated');
+                setIsLoading(false);
+
+                if (isEditingAI) {
+                    setAiConfigBaseline(buildAIConfigSnapshot());
+                }
 
                 // ── AUTO-SAVE IN BACKGROUND ──
                 // Even if user doesn't finish the review, the quiz is saved to database
@@ -248,6 +479,10 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 setAiProgress(0);
             }
         } catch (err) {
+            if (err.name === 'AbortError' || err.code === 'ERR_CANCELED' || err.message === 'canceled') {
+                console.log("Génération annulée par l'utilisateur.");
+                return;
+            }
             console.error("AI Generation failed:", err);
             // Normalize error message from different shapes (thrown object, fetch error, axios-like)
             const errMsg = (err && (err.detail || err.message || err.error)) || (err?.response?.data?.detail) || JSON.stringify(err);
@@ -260,10 +495,38 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
         }
     };
 
-    const handlePublish = async () => {
+    const maybeTranslateManualQuiz = async (baseQuizData, baseQuestions) => {
+        if ((creationMode || '').startsWith('ai')) {
+            return { titre: baseQuizData.titre, description: baseQuizData.description, questions: baseQuestions };
+        }
+
+        const targetLanguage = (manualLanguage || 'Français').trim();
+        const isFrench = ['fr', 'français', 'francais', 'french'].includes(targetLanguage.toLowerCase());
+        if (isFrench) {
+            return { titre: baseQuizData.titre, description: baseQuizData.description, questions: baseQuestions };
+        }
+
+        const translated = await api.post('/quiz/translate/manual', {
+            titre: baseQuizData.titre,
+            description: baseQuizData.description,
+            questions: baseQuestions,
+            target_language: targetLanguage
+        });
+
+        return {
+            titre: translated?.titre || baseQuizData.titre,
+            description: translated?.description || baseQuizData.description,
+            questions: Array.isArray(translated?.questions) && translated.questions.length > 0 ? translated.questions : baseQuestions,
+        };
+    };
+
+    const handlePublish = async ({ launchAfterPublish = false, forcedQuestions = null, forcedQuizData = null } = {}) => {
         setIsLoading(true);
         try {
-            let finalImageUrl = quizData.image_couverture_url || '';
+            const sourceQuizData = forcedQuizData || quizData;
+            const sourceQuestions = Array.isArray(forcedQuestions) ? forcedQuestions : questions;
+
+            let finalImageUrl = sourceQuizData.image_couverture_url || '';
 
             // If user picked a thumbnail file, upload it to the server first
             if (thumbnailFile) {
@@ -278,17 +541,43 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 }
             }
 
+            const isAICreation = (creationMode || '').startsWith('ai');
+            const normalizedManualQuestions = sourceQuestions.map(sanitizeQuestionForApi);
+            const translatedManual = await maybeTranslateManualQuiz(sourceQuizData, normalizedManualQuestions);
+            const finalQuizData = isAICreation
+                ? sourceQuizData
+                : {
+                    ...sourceQuizData,
+                    titre: translatedManual.titre,
+                    description: translatedManual.description,
+                };
+            const finalQuestions = isAICreation ? sourceQuestions : translatedManual.questions;
+            const selectedTimeMode = aiSettings.time_mode;
+            const selectedTimeValue = Number.isFinite(Number(aiSettings.time_value)) ? Number(aiSettings.time_value) : null;
+            const computedDurationMinutes = selectedTimeMode === 'Timer Global'
+                ? (selectedTimeValue ?? sourceQuizData.duree_max_minutes)
+                : null;
+
             const payload = {
-                ...quizData,
-                type_creation: editingQuiz ? (editingQuiz.type_creation || (creationMode.startsWith('ai') ? 'ai' : 'manual')) : (creationMode.startsWith('ai') ? 'ai' : 'manual'),
+                ...finalQuizData,
+                duree_max_minutes: computedDurationMinutes,
+                type_creation: editingQuiz ? (editingQuiz.type_creation || (isAICreation ? 'ai' : 'manual')) : (isAICreation ? 'ai' : 'manual'),
                 image_couverture_url: finalImageUrl,
-                questions: questions,
-                parametres_generation: {
-                    ...aiSettings,
-                    type_creation: creationMode.startsWith('ai') ? 'ai' : 'manual',
-                    prompt: aiInput, // Keep original prompt for re-generation
-                    saved_documents: savedDocuments // Preserve files on edit save
-                }
+                questions: finalQuestions,
+                parametres_generation: isAICreation
+                    ? {
+                        ...aiSettings,
+                        type_creation: 'ai',
+                        prompt: aiInput,
+                        saved_documents: savedDocuments
+                    }
+                    : {
+                        type_creation: 'manual',
+                        language: manualLanguage,
+                        time_mode: aiSettings.time_mode,
+                        time_value: aiSettings.time_value,
+                        show_immediate_feedback: aiSettings.show_immediate_feedback
+                    }
             };
 
             let response;
@@ -299,6 +588,26 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 response = await api.put(`/quiz/${generatedQuizId}`, payload);
             } else {
                 response = await api.post('/quiz/manual', payload);
+            }
+
+            const publishedQuizId = response?.id_quiz || response?.data?.id_quiz || editingQuiz?.id_quiz || generatedQuizId;
+
+            if (launchAfterPublish && publishedQuizId) {
+                if (isSession && onLaunchLiveSession) {
+                    try {
+                        const sessionResponse = await api.post('/session/', {
+                            id_quiz: publishedQuizId,
+                            mode_acces: sourceQuizData.visibilite || 'private'
+                        });
+                        onLaunchLiveSession(sessionResponse.code_session, true);
+                    } catch (sessionErr) {
+                        console.error("Failed to create live session:", sessionErr);
+                        alert("Erreur lors de la création de la session live.");
+                    }
+                } else if (onLaunchQuiz) {
+                    await onLaunchQuiz(publishedQuizId);
+                }
+                return response;
             }
 
             setStep('success');
@@ -322,19 +631,70 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
     const handleStartManual = () => {
         setCreationMode('manual');
         setStep('manual_editor');
+        setOptionCount(2);
+        setManualLanguage('Français');
         // Add first empty question
-        setQuestions([{
-            texte_question: '',
-            type_question: 'MCQ',
-            options_reponses: ['', '', '', ''],
-            reponse_correcte: '',
-            explication: '',
-            points: 1
-        }]);
+        setQuestions([createManualQuestion(2)]);
+    };
+
+    const handleJoinSessionByCode = async () => {
+        if (isJoiningSession) return;
+
+        const code = String(sessionJoinCode || '').trim().toUpperCase();
+        if (!code) {
+            setJoinSessionError('Entrez un code de session.');
+            return;
+        }
+
+        setJoinSessionError('');
+        setIsJoiningSession(true);
+
+        try {
+            const joinResponse = await api.post(`/session/${code}/join`, {});
+
+            const isCreatorRole = joinResponse?.role === 'creator';
+
+            if (isCreatorRole) {
+                if (onLaunchLiveSession) {
+                    onLaunchLiveSession(code, true);
+                } else if (onJoinLiveSession) {
+                    onJoinLiveSession(code, true);
+                }
+                return;
+            }
+
+            if (onJoinLiveSession) {
+                onJoinLiveSession(code, false);
+            } else if (onLaunchLiveSession) {
+                onLaunchLiveSession(code, false);
+            }
+        } catch (err) {
+            setJoinSessionError(err?.detail || err?.message || "Impossible de rejoindre cette session.");
+        } finally {
+            setIsJoiningSession(false);
+        }
+    };
+
+    const handleBack = () => {
+        if (isLoading) {
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+            setIsLoading(false);
+            setAiProgress(0);
+        }
+
+        if (step === 'main_choice') onClose();
+        else if (step === 'selector') setStep('main_choice');
+        else if (step === 'join_session') setStep('selector');
+        else if (step === 'ai_config') setStep('selector');
+        else if (step === 'manual_editor') setStep('main_choice');
+        else if (step === 'success') onClose();
+        else setStep('main_choice');
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex flex-col overflow-y-auto transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+        <div className="fixed inset-0 z-50 flex flex-col overflow-y-auto overflow-x-hidden transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
             <motion.div
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -344,14 +704,12 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                 {/* Back Button (instead of close) - Hidden during review to avoid overlap */}
                 {step !== 'review_generated' && (
                     <button
-                        onClick={() => step === 'main_choice' ? onClose() : setStep('main_choice')}
-                        className="absolute top-8 left-8 p-3 rounded-2xl transition-all z-50 flex items-center gap-2 font-black group"
-                        style={{ color: 'var(--text-muted)' }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-elevated)'}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                        onClick={handleBack}
+                        className="fixed top-8 left-8 p-3 rounded-full transition-all z-[100] flex items-center justify-center bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 backdrop-blur-md shadow-lg group"
+                        style={{ color: 'var(--text-primary)' }}
+                        aria-label={step === 'main_choice' ? 'Quitter' : 'Retour'}
                     >
-                        <X size={20} className="group-hover:rotate-90 transition-transform" />
-                        <span className="text-sm">{step === 'main_choice' ? 'Quitter' : 'Retour'}</span>
+                        {step === 'main_choice' ? <X size={24} className="group-hover:rotate-90 transition-transform" /> : <ArrowLeft size={24} className="group-hover:-translate-x-1 transition-transform" />}
                     </button>
                 )}
 
@@ -482,6 +840,13 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                 <motion.div
                                     whileHover={{ y: -5, scale: 1.01 }}
                                     transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                                    onClick={() => {
+                                        if (isSession) {
+                                            setSessionJoinCode('');
+                                            setJoinSessionError('');
+                                            setStep('join_session');
+                                        }
+                                    }}
                                     className="p-8 rounded-[32px] bg-linear-to-br from-blue-500 to-cyan-600 text-white cursor-pointer group relative overflow-hidden shadow-xl shadow-blue-200"
                                 >
                                     <div className="absolute top-0 right-0 p-6 opacity-20 group-hover:scale-110 transition-transform">
@@ -491,12 +856,14 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                         <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
                                             <Users size={32} />
                                         </div>
-                                        <h3 className="text-2xl font-black mb-2">Cloner / Importer</h3>
+                                        <h3 className="text-2xl font-black mb-2">{isSession ? 'Accéder à une session' : 'Cloner / Importer'}</h3>
                                         <p className="text-blue-100 text-sm leading-relaxed mb-8">
-                                            Partez d'un quiz existant de la communauté et adaptez-le à vos besoins.
+                                            {isSession
+                                                ? 'Entrez un code de session pour rejoindre la salle d\'attente en direct.'
+                                                : 'Partez d\'un quiz existant de la communauté et adaptez-le à vos besoins.'}
                                         </p>
                                         <div className="flex items-center gap-2 font-bold text-sm">
-                                            Explorer <ChevronRight size={18} />
+                                            {isSession ? 'Rejoindre' : 'Explorer'} <ChevronRight size={18} />
                                         </div>
                                     </div>
                                 </motion.div>
@@ -505,12 +872,69 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                     </div>
                 )}
 
+                {step === 'join_session' && (
+                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-center overflow-y-auto">
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="max-w-2xl w-full"
+                        >
+                            <div className="mx-auto w-20 h-20 rounded-3xl bg-cyan-500/15 text-cyan-400 flex items-center justify-center mb-6">
+                                <Users size={36} />
+                            </div>
+
+                            <h1 className="text-5xl font-black mb-4" style={{ color: 'var(--text-primary)' }}>Accéder à une session</h1>
+                            <p className="text-lg mb-10" style={{ color: 'var(--text-secondary)' }}>
+                                Entrez le code de session partagé par le créateur pour rejoindre la salle d'attente.
+                            </p>
+
+                            <div className="mx-auto max-w-xl p-8 rounded-[32px] border shadow-2xl" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border)' }}>
+                                <label className="text-[10px] font-black uppercase tracking-widest opacity-60" style={{ color: 'var(--text-secondary)' }}>
+                                    Code session
+                                </label>
+
+                                <input
+                                    type="text"
+                                    maxLength={6}
+                                    value={sessionJoinCode}
+                                    onChange={(e) => {
+                                        setSessionJoinCode(e.target.value.toUpperCase());
+                                        if (joinSessionError) setJoinSessionError('');
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            handleJoinSessionByCode();
+                                        }
+                                    }}
+                                    placeholder="ABC123"
+                                    className="w-full mt-3 mb-3 border-2 border-transparent rounded-2xl px-5 py-4 text-center text-4xl font-black tracking-[0.35em] uppercase outline-none focus:border-cyan-500 transition-all"
+                                    style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                />
+
+                                {joinSessionError && (
+                                    <p className="text-sm font-bold text-red-500 mb-4">{joinSessionError}</p>
+                                )}
+
+                                <motion.button
+                                    whileHover={{ scale: 1.02, y: -2 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={handleJoinSessionByCode}
+                                    disabled={isJoiningSession || !sessionJoinCode.trim()}
+                                    className="w-full py-4 rounded-2xl font-black text-lg text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 transition-all shadow-xl shadow-cyan-500/20"
+                                >
+                                    {isJoiningSession ? 'Connexion...' : 'Entrer dans la session'}
+                                </motion.button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+
                 {step === 'ai_config' && !isLoading && (
                     <div className="flex-1 flex flex-col items-center p-4 md:p-8 overflow-y-auto custom-scrollbar font-inter transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)' }}>
                         <motion.div
                             initial={{ opacity: 0, y: 30 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className="max-w-7xl w-full"
+                            className="max-w-[84rem] w-full"
                         >
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
                                 {/* Column 1: Metadata (Aesthetics & Identity) */}
@@ -713,12 +1137,18 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                                             <span className="text-sm font-bold truncate" style={{ color: 'var(--text-primary)' }}>{doc.name}</span>
                                                         </div>
                                                         <div className="flex gap-2">
-                                                            <a href={doc.url} target="_blank" rel="noopener noreferrer" className="p-2 border rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors" style={{ borderColor: 'var(--glass-border)' }} title="Voir">
-                                                                <Eye size={16} className="text-indigo-500" />
-                                                            </a>
                                                             <a href={doc.url} download={doc.name} className="p-2 border rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors" style={{ borderColor: 'var(--glass-border)' }} title="Télécharger">
                                                                 <Download size={16} className="text-emerald-500" />
                                                             </a>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleRemoveSavedDocument(idx)}
+                                                                className="p-2 border rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                                                                style={{ borderColor: 'var(--glass-border)' }}
+                                                                title="Retirer de la génération"
+                                                            >
+                                                                <X size={16} className="text-red-500" />
+                                                            </button>
                                                         </div>
                                                     </motion.div>
                                                 ))}
@@ -859,41 +1289,30 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                             </div>
                                         </div>
 
-                                        {/* Visibility & Clonability */}
+                                        {/* Language */}
                                         <div className="pt-4 border-t border-indigo-500/10 space-y-4">
-                                            <div className="flex items-center justify-between">
-                                                <div className="space-y-1">
-                                                    <label className="text-[10px] font-black uppercase tracking-widest opacity-50" style={{ color: 'var(--text-secondary)' }}>Visibilité</label>
-                                                    <p className="text-[10px] opacity-40" style={{ color: 'var(--text-secondary)' }}>Public ou Privé</p>
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase tracking-widest opacity-50" style={{ color: 'var(--text-secondary)' }}>Langue du Quiz</label>
+                                                <div className="grid grid-cols-2 gap-2 mt-2">
+                                                    {[
+                                                        { name: 'Français', icon: '🇫🇷' },
+                                                        { name: 'English', icon: '🇬🇧' },
+                                                        { name: 'Arabe', icon: '🇸🇦' },
+                                                        { name: 'Espagnol', icon: '🇪🇸' }
+                                                    ].map((lang) => (
+                                                        <button
+                                                            key={lang.name}
+                                                            onClick={() => setAiSettings({ ...aiSettings, language: lang.name })}
+                                                            className={`flex items-center justify-center gap-2 py-2 rounded-xl transition-all duration-300 font-bold text-xs ${aiSettings.language === lang.name ? 'shadow-lg ring-2 ring-indigo-500' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
+                                                            style={{ 
+                                                                backgroundColor: aiSettings.language === lang.name ? 'var(--bg-elevated)' : 'var(--bg-surface)',
+                                                                color: aiSettings.language === lang.name ? 'var(--text-primary)' : 'var(--text-secondary)'
+                                                            }}
+                                                        >
+                                                            <span className="text-base">{lang.icon}</span> {lang.name}
+                                                        </button>
+                                                    ))}
                                                 </div>
-                                                <div className="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
-                                                    <button
-                                                        onClick={() => setQuizData({ ...quizData, visibilite: 'public' })}
-                                                        className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${quizData.visibilite === 'public' ? 'bg-indigo-600 text-white shadow-lg' : 'opacity-40 hover:opacity-100'}`}
-                                                        style={{ color: quizData.visibilite === 'public' ? '#fff' : 'var(--text-primary)' }}
-                                                    >Public</button>
-                                                    <button
-                                                        onClick={() => setQuizData({ ...quizData, visibilite: 'private' })}
-                                                        className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${quizData.visibilite === 'private' ? 'bg-indigo-600 text-white shadow-lg' : 'opacity-40 hover:opacity-100'}`}
-                                                        style={{ color: quizData.visibilite === 'private' ? '#fff' : 'var(--text-primary)' }}
-                                                    >Privé</button>
-                                                </div>
-                                            </div>
-
-                                            <div className="flex items-center justify-between pl-1">
-                                                <div className="space-y-1">
-                                                    <label className="text-[10px] font-black uppercase tracking-widest opacity-50" style={{ color: 'var(--text-secondary)' }}>Clonable</label>
-                                                    <p className="text-[10px] opacity-40" style={{ color: 'var(--text-secondary)' }}>Autoriser la copie</p>
-                                                </div>
-                                                <button
-                                                    onClick={() => setQuizData({ ...quizData, peut_etre_clone: !quizData.peut_etre_clone })}
-                                                    className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 relative ${quizData.peut_etre_clone ? 'bg-indigo-600' : 'bg-slate-300/50'}`}
-                                                >
-                                                    <motion.div
-                                                        animate={{ x: quizData.peut_etre_clone ? 24 : 0 }}
-                                                        className="w-4 h-4 bg-white rounded-full shadow-md"
-                                                    />
-                                                </button>
                                             </div>
                                         </div>
                                     </div>
@@ -930,11 +1349,11 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
                                         whileHover={{ scale: 1.05, y: -2 }}
                                         whileTap={{ scale: 0.95 }}
                                         onClick={handleAIGenerate}
-                                        disabled={(!aiInput && files.length === 0) || !quizData.titre}
-                                        className={`px-12 py-5 rounded-full font-outfit font-black text-xl shadow-2xl transition-all flex items-center justify-center gap-4 ${((aiInput || files.length > 0) && quizData.titre) ? 'enthusiast-gradient text-white shadow-indigo-500/20' : 'opacity-20 pointer-events-none'}`}
-                                        style={{ backgroundColor: ((aiInput || files.length > 0) && quizData.titre) ? '' : 'var(--bg-elevated)', color: ((aiInput || files.length > 0) && quizData.titre) ? '' : 'var(--text-muted)' }}
+                                        disabled={!canRegenerate}
+                                        className={`px-12 py-5 rounded-full font-outfit font-black text-xl shadow-2xl transition-all flex items-center justify-center gap-4 ${canRegenerate ? 'enthusiast-gradient text-white shadow-indigo-500/20' : 'opacity-20 pointer-events-none'}`}
+                                        style={{ backgroundColor: canRegenerate ? '' : 'var(--bg-elevated)', color: canRegenerate ? '' : 'var(--text-muted)' }}
                                     >
-                                        {editingQuiz ? 'Régénérer' : 'Générer'} <Sparkles size={24} />
+                                        {editingQuiz ? 'Régénérer' : (isSession ? 'Créer le quiz' : 'Générer')} <Sparkles size={24} />
                                     </motion.button>
                                 </div>
                             </div>
@@ -999,224 +1418,454 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
 
                 {step === 'review_generated' && (
                     <QuizPlayer
-                        quiz={{ questions, duree_max_minutes: quizData.duree_max_minutes, parametres_generation: aiSettings }}
+                        quiz={{
+                            titre: quizData.titre,
+                            description: quizData.description,
+                            type_creation: 'ai',
+                            questions,
+                            duree_max_minutes: quizData.duree_max_minutes,
+                            parametres_generation: {
+                                ...aiSettings,
+                                type_creation: 'ai'
+                            }
+                        }}
                         onClose={() => setStep('ai_config')}
                         isReview={true}
-                        onPublish={handlePublish}
+                        publishLabel={isSession ? 'CRÉER LE LOBBY' : 'PUBLIER'}
+                        onPublish={() => handlePublish({ launchAfterPublish: isSession })}
                     />
                 )}
 
                 {step === 'manual_editor' && (
-                    <div className="flex-1 flex overflow-hidden">
-                        {/* Sidebar Configuration */}
-                        <aside className="w-80 border-r flex flex-col p-8 transition-colors duration-500"
-                            style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}>
-                            <div className="flex items-center gap-3 mb-8" style={{ color: 'var(--text-primary)' }}>
-                                <Settings size={20} style={{ color: 'var(--accent)' }} />
-                                <h2 className="font-black text-lg">Configuration</h2>
-                            </div>
+    <div className="flex-1 flex flex-col items-center p-4 md:p-8 overflow-y-auto custom-scrollbar font-inter transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)' }}>
+        <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="max-w-[84rem] w-full"
+        >
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+<div className="space-y-6 glass-card p-6 rounded-[32px] shadow-2xl transition-all duration-500"
+                                    style={{ borderColor: 'var(--glass-border)' }}>
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <div className="w-10 h-10 enthusiast-gradient text-white rounded-xl flex items-center justify-center shadow-lg">
+                                            <ImageIcon size={20} />
+                                        </div>
+                                        <h3 className="font-outfit text-xl font-bold transition-colors" style={{ color: 'var(--text-primary)' }}>Identité du Quiz</h3>
+                                    </div>
 
-                            <div className="space-y-6 flex-1 overflow-y-auto">
-                                <div>
-                                    <label className="block text-xs font-black uppercase tracking-widest mb-2 opacity-50" style={{ color: 'var(--text-secondary)' }}>Titre du Quiz</label>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Titre du Quiz</label>
+                                            <input
+                                                type="text"
+                                                value={quizData.titre}
+                                                onChange={(e) => setQuizData({ ...quizData, titre: e.target.value })}
+                                                className="w-full mt-1.5 border-2 border-transparent rounded-2xl px-4 py-3 outline-none focus:border-indigo-400 transition-all font-bold"
+                                                style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                                placeholder="Ex: Voyage au centre de la Terre"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Description</label>
+                                            <textarea
+                                                value={quizData.description}
+                                                onChange={(e) => setQuizData({ ...quizData, description: e.target.value })}
+                                                className="w-full mt-1.5 border-2 border-transparent rounded-2xl px-4 py-3 outline-none focus:border-indigo-400 transition-all font-medium text-sm resize-none h-24"
+                                                style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                                placeholder="Décrivez votre quiz en quelques mots..."
+                                            />
+                                        </div>
+
+                                        {/* Thumbnail Upload with YouTube-style hover preview */}
+                                        <div>
+                                            <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Miniature (Thumbnail)</label>
+                                            <div className="mt-2 relative group cursor-pointer overflow-hidden rounded-2xl aspect-4/3 border-2 border-dashed hover:border-indigo-400 transition-all"
+                                                style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border)' }}>
+                                                {quizData.image_couverture_url ? (
+                                                    <>
+                                                        <img src={quizData.image_couverture_url} alt="Cover" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
+                                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                            <button onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setQuizData({ ...quizData, image_couverture_url: '' });
+                                                                setThumbnailFile(null);
+                                                                if (document.getElementById('thumb-upload')) {
+                                                                    document.getElementById('thumb-upload').value = '';
+                                                                }
+                                                            }} className="p-2 bg-red-500 text-white rounded-full shadow-lg hover:bg-red-600 transition-all">
+                                                                <X size={16} />
+                                                            </button>
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 p-4" onClick={() => document.getElementById('thumb-upload').click()}>
+                                                        <Upload size={24} className="mb-2" />
+                                                        <p className="text-[10px] font-bold text-center">CLIQUEZ POUR UPLOADER (PNG, JPG)</p>
+                                                    </div>
+                                                )}
+                                                <input id="thumb-upload" type="file" className="hidden" accept="image/*" onChange={(e) => {
+                                                    const file = e.target.files[0];
+                                                    if (file) {
+                                                        setThumbnailFile(file); // Keep raw file for server upload
+                                                        const reader = new FileReader();
+                                                        reader.onload = (ev) => setQuizData({ ...quizData, image_couverture_url: ev.target.result });
+                                                        reader.readAsDataURL(file);
+                                                    }
+                                                }} />
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Visibilité</label>
+                                                <select
+                                                    value={quizData.visibilite}
+                                                    onChange={(e) => setQuizData({ ...quizData, visibilite: e.target.value })}
+                                                    className="w-full mt-1.5 border-2 border-transparent rounded-2xl px-3 py-2 text-xs font-bold outline-none focus:border-indigo-400 transition-all"
+                                                    style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+                                                >
+                                                    <option value="public" className="bg-white dark:bg-[#161b27]">Public</option>
+                                                    <option value="private" className="bg-white dark:bg-[#161b27]">Privé</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Clonable</label>
+                                                <div className="mt-1.5 flex items-center h-[42px] px-3 border-2 border-transparent rounded-2xl transition-all"
+                                                    style={{ backgroundColor: 'var(--bg-elevated)' }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={quizData.peut_etre_clone}
+                                                        onChange={(e) => setQuizData({ ...quizData, peut_etre_clone: e.target.checked })}
+                                                        className="w-4 h-4 accent-indigo-600"
+                                                    />
+                                                    <span className="ml-2 text-xs font-bold opacity-70">Oui</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {quizData.visibilite === 'public' && (
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase tracking-widest ml-1 flex items-center gap-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>
+                                                    <Tag size={10} /> Tags (Séparez par virgule)
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    value={quizData.tags.join(', ')}
+                                                    onChange={(e) => setQuizData({ ...quizData, tags: e.target.value.split(',').map(t => t.trim()) })}
+                                                    className="w-full mt-1.5 border-2 border-transparent rounded-2xl px-4 py-2.5 outline-none focus:border-indigo-400 transition-all font-bold text-xs"
+                                                    style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--accent)' }}
+                                                    placeholder="Histoire, Science, Fun..."
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                
+                {/* Column 2: Manual Questions Editor */}
+                <div className="space-y-6 lg:max-h-[800px] overflow-y-auto overflow-x-hidden custom-scrollbar p-2 min-w-0">
+                    <div className="flex items-center gap-4 mb-2">
+                        <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center shadow-inner">
+                            <FileText size={24} />
+                        </div>
+                        <div>
+                            <h2 className="font-outfit text-2xl font-black tracking-tight" style={{ color: 'var(--text-primary)' }}>Contenu du Quiz</h2>
+                            <p className="text-emerald-500 text-[10px] font-black uppercase tracking-widest opacity-80">Rédigez vos questions</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                            <h2 className="text-xl font-black transition-colors" style={{ color: 'var(--text-primary)' }}>Questions ({questions.length})</h2>
+                            <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border-2 border-transparent transition-all" style={{ backgroundColor: 'var(--bg-elevated)' }}>
+                                    <span className="text-[10px] font-black uppercase tracking-widest opacity-50" style={{ color: 'var(--text-secondary)' }}>Options</span>
                                     <input
-                                        type="text"
-                                        value={quizData.titre}
-                                        onChange={(e) => setQuizData({ ...quizData, titre: e.target.value })}
-                                        className="w-full border-2 border-transparent rounded-xl px-4 py-3 outline-none focus:border-purple-300 transition-all font-bold"
-                                        style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
-                                        placeholder="Ex: Les secrets de Mars"
+                                        type="number"
+                                        min={2}
+                                        max={6}
+                                        step={1}
+                                        value={optionCount}
+                                        onChange={(e) => handleOptionCountChange(e.target.value)}
+                                        className="w-14 bg-transparent border-none outline-none font-black text-center text-sm"
+                                        style={{ color: 'var(--text-primary)' }}
                                     />
                                 </div>
 
-                                <div>
-                                    <label className="block text-xs font-black uppercase tracking-widest mb-2 opacity-50" style={{ color: 'var(--text-secondary)' }}>Difficulté</label>
-                                    <div className="grid grid-cols-3 gap-2">
-                                        {['Facile', 'Moyen', 'Difficile'].map(d => (
-                                            <button
-                                                key={d}
-                                                onClick={() => setQuizData({ ...quizData, difficulte_moyenne: d })}
-                                                className={`py-2 rounded-lg text-xs font-bold transition-all border duration-300 ${quizData.difficulte_moyenne === d ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
-                                                style={{ backgroundColor: quizData.difficulte_moyenne === d ? '' : 'var(--bg-elevated)', color: quizData.difficulte_moyenne === d ? '' : 'var(--text-primary)' }}
+                                <button
+                                    onClick={() => setQuestions([...questions, createManualQuestion(optionCount)])}
+                                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold transition-all duration-300 shadow-lg"
+                                    style={{ backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--emerald-500)' }}
+                                >
+                                    <Plus size={16} /> Ajouter
+                                </button>
+                            </div>
+                        </div>
+
+                        <AnimatePresence>
+                            {questions.map((q, idx) => {
+                                const correctIndexes = getCorrectIndexes(q);
+                                return (
+                                <motion.div
+                                    key={idx}
+                                    variants={{
+                                        hidden: { opacity: 0, y: 20 },
+                                        visible: { opacity: 1, y: 0 }
+                                    }}
+                                    initial="hidden" animate="visible" exit="hidden"
+                                    className="p-6 rounded-[24px] border-2 transition-all hover:border-emerald-500/30 relative shadow-sm group"
+                                    style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}
+                                >
+                                    <div className="flex items-start gap-4 mb-4">
+                                        <div className="w-8 h-8 text-white rounded-xl flex items-center justify-center font-black text-sm shrink-0 bg-emerald-500 shadow-lg">
+                                            {idx + 1}
+                                        </div>
+                                        <div className="flex-1">
+                                            <textarea
+                                                placeholder="Votre question ici..."
+                                                className="w-full text-xl font-bold bg-transparent border-none outline-none resize-none min-h-[64px] transition-colors"
+                                                style={{ color: 'var(--text-primary)' }}
+                                                rows={3}
+                                                value={q.texte_question}
+                                                onChange={(e) => {
+                                                    const newQs = [...questions];
+                                                    newQs[idx].texte_question = e.target.value;
+                                                    setQuestions(newQs);
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        {q.options_reponses.map((opt, optIdx) => (
+                                            (() => {
+                                                const isChecked = correctIndexes.includes(optIdx);
+                                                return (
+                                            <div
+                                                key={optIdx}
+                                                className={`relative flex items-center gap-3 p-3 rounded-xl border-2 overflow-hidden transition-all duration-500 ${isChecked ? 'border-green-500 shadow-md bg-green-500/5' : 'border-transparent'}`}
+                                                style={{ backgroundColor: isChecked ? '' : 'var(--bg-elevated)' }}
                                             >
-                                                {d}
-                                            </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const newQs = [...questions];
+                                                        const currentQuestion = newQs[idx];
+                                                        const currentIndexes = getCorrectIndexes(currentQuestion);
+                                                        const currentlyChecked = currentIndexes.includes(optIdx);
+                                                        const optionLength = currentQuestion.options_reponses?.length || 0;
+                                                        const maxSelectable = Math.max(1, optionLength - 1);
+
+                                                        let nextIndexes = currentIndexes;
+                                                        if (currentlyChecked) {
+                                                            if (currentIndexes.length > 1) {
+                                                                nextIndexes = currentIndexes.filter(index => index !== optIdx);
+                                                            }
+                                                        } else if (currentIndexes.length < maxSelectable) {
+                                                            nextIndexes = [...currentIndexes, optIdx].sort((a, b) => a - b);
+                                                        } else if (maxSelectable === 1) {
+                                                            nextIndexes = [optIdx];
+                                                        }
+
+                                                        newQs[idx] = normalizeManualQuestion({
+                                                            ...currentQuestion,
+                                                            reponses_correctes_idx: nextIndexes,
+                                                        });
+                                                        setQuestions(newQs);
+                                                    }}
+                                                    className={`w-6 h-6 rounded-md border-2 flex items-center justify-center cursor-pointer transition-all duration-300 ${isChecked ? 'bg-green-500 border-green-500 text-white' : 'border-slate-500/40'}`}
+                                                    title="Marquer comme bonne réponse"
+                                                >
+                                                    {isChecked && <Check size={12} strokeWidth={4} />}
+                                                </button>
+                                                <input
+                                                    placeholder={`Option ${optIdx + 1}`}
+                                                    value={opt}
+                                                    onChange={(e) => {
+                                                        const newQs = [...questions];
+                                                        const currentQuestion = {
+                                                            ...newQs[idx],
+                                                            options_reponses: [...newQs[idx].options_reponses]
+                                                        };
+                                                        currentQuestion.options_reponses[optIdx] = e.target.value;
+                                                        newQs[idx] = normalizeManualQuestion(currentQuestion);
+                                                        setQuestions(newQs);
+                                                    }}
+                                                    className="flex-1 min-w-0 bg-transparent border-none outline-none font-medium h-6 transition-colors text-base"
+                                                    style={{ color: 'var(--text-primary)' }}
+                                                />
+                                            </div>
+                                                );
+                                            })()
                                         ))}
                                     </div>
-                                </div>
 
-                                <div>
-                                    <label className="block text-xs font-black uppercase tracking-widest mb-2 opacity-50" style={{ color: 'var(--text-secondary)' }}>Visibilité</label>
-                                    <div className="flex gap-2">
+                                    <div className="mt-4 pt-4 border-t flex items-center gap-4 justify-between transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all" style={{ backgroundColor: 'var(--bg-elevated)' }}>
+                                                <Trophy size={14} className="text-orange-400" />
+                                                <input
+                                                    type="number"
+                                                    value={q.points}
+                                                    onChange={(e) => {
+                                                        const newQs = [...questions];
+                                                        newQs[idx].points = parseInt(e.target.value) || 0;
+                                                        setQuestions(newQs);
+                                                    }}
+                                                    className="w-10 bg-transparent border-none outline-none font-black text-center text-sm"
+                                                    style={{ color: 'var(--text-primary)' }}
+                                                />
+                                                <span className="text-[10px] font-black uppercase opacity-50" style={{ color: 'var(--text-secondary)' }}>Points</span>
+                                            </div>
+                                        </div>
                                         <button
-                                            onClick={() => setQuizData({ ...quizData, visibilite: 'public' })}
-                                            className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 transition-all duration-300 ${quizData.visibilite === 'public' ? 'border-indigo-600 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
-                                            style={{ backgroundColor: quizData.visibilite === 'public' ? 'rgba(79, 70, 229, 0.1)' : 'var(--bg-elevated)', color: quizData.visibilite === 'public' ? 'var(--accent)' : 'var(--text-primary)' }}
+                                            onClick={() => setQuestions(questions.filter((_, i) => i !== idx))}
+                                            className="opacity-50 hover:opacity-100 font-bold text-[10px] uppercase tracking-wider transition-colors text-red-500"
                                         >
-                                            <Eye size={16} /> <span className="text-xs font-bold">Public</span>
-                                        </button>
-                                        <button
-                                            onClick={() => setQuizData({ ...quizData, visibilite: 'private' })}
-                                            className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 transition-all duration-300 ${quizData.visibilite === 'private' ? 'border-indigo-600 shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
-                                            style={{ backgroundColor: quizData.visibilite === 'private' ? 'rgba(79, 70, 229, 0.1)' : 'var(--bg-elevated)', color: quizData.visibilite === 'private' ? 'var(--accent)' : 'var(--text-primary)' }}
-                                        >
-                                            <X size={16} /> <span className="text-xs font-bold">Privé</span>
+                                            Supprimer
                                         </button>
                                     </div>
-                                </div>
-
-                                <div>
-                                    <label className="block text-xs font-black uppercase tracking-widest mb-2 opacity-50" style={{ color: 'var(--text-secondary)' }}>Temps (min)</label>
-                                    <div className="flex items-center gap-4 p-3 rounded-xl border-2 border-transparent transition-all"
-                                        style={{ backgroundColor: 'var(--bg-elevated)' }}>
-                                        <Clock size={18} className="opacity-50" style={{ color: 'var(--text-secondary)' }} />
-                                        <input
-                                            type="number"
-                                            value={quizData.duree_max_minutes}
-                                            onChange={(e) => setQuizData({ ...quizData, duree_max_minutes: parseInt(e.target.value) })}
-                                            className="w-full outline-none font-bold bg-transparent"
-                                            style={{ color: 'var(--text-primary)' }}
-                                            min="1"
-                                        />
+                                </motion.div>
+                                );
+                            })}
+                        </AnimatePresence>
+                    </div>
+                </div>
+{/* Column 3: AI Settings (Parameters) */}
+                                <div className="space-y-6 glass-card p-6 rounded-[32px] shadow-2xl transition-all duration-500"
+                                    style={{ borderColor: 'var(--glass-border)' }}>
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                                            <Settings size={20} />
+                                        </div>
+                                        <h3 className="font-outfit text-xl font-bold transition-colors" style={{ color: 'var(--text-primary)' }}>Paramètres du Quiz</h3>
                                     </div>
-                                </div>
-                            </div>
 
-                            <div className="pt-6 border-t mt-6 space-y-3 transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
-                                <motion.button
-                                    whileHover={{ scale: 1.02 }}
-                                    whileTap={{ scale: 0.98 }}
-                                    onClick={handlePublish}
-                                    disabled={isLoading || !quizData.titre || questions.length === 0}
-                                    className="w-full py-4 enthusiast-gradient text-white rounded-2xl font-black shadow-xl shadow-indigo-500/20 flex items-center justify-center gap-3 disabled:opacity-20"
-                                >
-                                    {isLoading ? 'Enregistrement...' : (
-                                        editingQuiz ? <>Sauvegarder les modifications <Check size={20} /></> : <>Publier Quiz <Rocket size={20} /></>
-                                    )}
-                                </motion.button>
-
-                            </div>
-                        </aside>
-
-                        {/* Editor Main Area */}
-                        <main className="flex-1 overflow-y-auto p-12 flex flex-col items-center transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)' }}>
-                            <motion.div
-                                className="w-full max-w-3xl space-y-12"
-                                initial="hidden"
-                                animate="visible"
-                                variants={{
-                                    visible: { transition: { staggerChildren: 0.1 } }
-                                }}
-                            >
-                                <div className="flex items-center justify-between">
-                                    <h2 className="text-3xl font-black transition-colors" style={{ color: 'var(--text-primary)' }}>Questions ({questions.length})</h2>
-                                    <button
-                                        onClick={() => setQuestions([...questions, { texte_question: '', type_question: 'MCQ', options_reponses: ['', '', '', ''], reponse_correcte: '', explication: '', points: 1 }])}
-                                        className="flex items-center gap-2 px-6 py-2 rounded-xl font-bold transition-all duration-300 shadow-lg shadow-indigo-500/10"
-                                        style={{ backgroundColor: 'rgba(79, 70, 229, 0.1)', color: 'var(--accent)' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(79, 70, 229, 0.2)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(79, 70, 229, 0.1)'}
-                                    >
-                                        <Plus size={20} /> Ajouter
-                                    </button>
-                                </div>
-
-                                <AnimatePresence>
-                                    {questions.map((q, idx) => (
-                                        <motion.div
-                                            key={idx}
-                                            variants={{
-                                                hidden: { opacity: 0, y: 20 },
-                                                visible: { opacity: 1, y: 0 }
-                                            }}
-                                            className="p-8 rounded-[32px] border-4 border-transparent transition-all hover:border-indigo-500/20 relative group"
-                                            style={{ backgroundColor: 'var(--bg-surface)' }}
-                                        >
-                                            <div className="flex items-start gap-6 mb-6">
-                                                <div className="w-12 h-12 text-white rounded-2xl flex items-center justify-center font-black text-xl shrink-0 enthusiast-gradient shadow-lg">
-                                                    {idx + 1}
-                                                </div>
-                                                <div className="flex-1">
-                                                    <textarea
-                                                        placeholder="Votre question ici..."
-                                                        className="w-full text-2xl font-bold bg-transparent border-none outline-none resize-none h-auto min-h-[60px] transition-colors"
-                                                        style={{ color: 'var(--text-primary)' }}
-                                                        rows="2"
-                                                        value={q.texte_question}
-                                                        onChange={(e) => {
-                                                            const newQs = [...questions];
-                                                            newQs[idx].texte_question = e.target.value;
-                                                            setQuestions(newQs);
-                                                        }}
+                                    <div className="space-y-6">
+                                        {/* Feedback Toggle */}
+                                        <div className="p-4 rounded-2xl border transition-all duration-500"
+                                            style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>
+                                            <div className="flex items-center justify-between mb-1">
+                                                <label className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2" style={{ color: 'var(--accent)' }}>
+                                                    <Sparkles size={12} /> Correction Immédiate
+                                                </label>
+                                                <div
+                                                    onClick={() => setAiSettings({ ...aiSettings, show_immediate_feedback: !aiSettings.show_immediate_feedback })}
+                                                    className={`w-12 h-6 rounded-full p-1 cursor-pointer transition-colors duration-300 ${aiSettings.show_immediate_feedback ? 'bg-indigo-600' : 'bg-slate-500/30'}`}
+                                                >
+                                                    <motion.div
+                                                        animate={{ x: aiSettings.show_immediate_feedback ? 24 : 0 }}
+                                                        className="w-4 h-4 bg-white rounded-full shadow-sm"
                                                     />
                                                 </div>
                                             </div>
+                                            <p className="text-[10px] font-medium leading-tight opacity-50" style={{ color: 'var(--text-secondary)' }}>Affiche la réponse et l'explication après chaque clic.</p>
+                                        </div>
 
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                {q.options_reponses.map((opt, optIdx) => (
-                                                    <div
-                                                        key={optIdx}
-                                                        className={`relative flex items-center gap-3 p-4 rounded-2xl border-2 transition-all duration-500 ${q.reponse_correcte === opt && opt !== '' ? 'border-green-500 shadow-lg shadow-green-500/10' : 'border-transparent'}`}
-                                                        style={{ backgroundColor: q.reponse_correcte === opt && opt !== '' ? 'rgba(34, 197, 94, 0.1)' : 'var(--bg-elevated)' }}
+
+                                        {/* Time Management */}
+                                        <div className="space-y-4">
+                                            <label className="text-[10px] font-black uppercase tracking-widest ml-1 opacity-50" style={{ color: 'var(--text-secondary)' }}>Pression Temporelle</label>
+                                            <div className="grid grid-cols-1 gap-2">
+                                                {['Pas de limite', 'Mode Chrono', 'Timer Global'].map(m => (
+                                                    <button
+                                                        key={m}
+                                                        onClick={() => setAiSettings({ ...aiSettings, time_mode: m })}
+                                                        className={`py-2 px-4 rounded-xl text-[10px] font-bold transition-all border-2 ${aiSettings.time_mode === m ? 'bg-white text-[#0d1117] border-white shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
+                                                        style={{ backgroundColor: aiSettings.time_mode === m ? '' : 'var(--bg-elevated)', color: aiSettings.time_mode === m ? '' : 'var(--text-primary)' }}
                                                     >
-                                                        <div
-                                                            onClick={() => {
-                                                                const newQs = [...questions];
-                                                                newQs[idx].reponse_correcte = opt;
-                                                                setQuestions(newQs);
-                                                            }}
-                                                            className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center cursor-pointer transition-all duration-300 ${q.reponse_correcte === opt && opt !== '' ? 'bg-green-500 border-green-500 text-white' : 'border-slate-500/30'}`}
-                                                        >
-                                                            {q.reponse_correcte === opt && opt !== '' && <Check size={14} strokeWidth={4} />}
-                                                        </div>
-                                                        <input
-                                                            placeholder={`Option ${optIdx + 1}`}
-                                                            value={opt}
-                                                            onChange={(e) => {
-                                                                const newQs = [...questions];
-                                                                newQs[idx].options_reponses[optIdx] = e.target.value;
-                                                                setQuestions(newQs);
-                                                            }}
-                                                            className="flex-1 bg-transparent border-none outline-none font-medium h-6 transition-colors"
-                                                            style={{ color: 'var(--text-primary)' }}
-                                                        />
-                                                    </div>
+                                                        {m}
+                                                    </button>
                                                 ))}
                                             </div>
 
-                                            <div className="mt-8 pt-8 border-t flex items-center gap-6 justify-between transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
-                                                <div className="flex items-center gap-6">
-                                                    <div className="flex items-center gap-3 px-4 py-2 rounded-xl transition-all" style={{ backgroundColor: 'var(--bg-elevated)' }}>
-                                                        <Trophy size={18} className="text-orange-400" />
-                                                        <input
-                                                            type="number"
-                                                            value={q.points}
-                                                            onChange={(e) => {
-                                                                const newQs = [...questions];
-                                                                newQs[idx].points = parseInt(e.target.value);
-                                                                setQuestions(newQs);
-                                                            }}
-                                                            className="w-12 bg-transparent border-none outline-none font-black text-center"
-                                                            style={{ color: 'var(--text-primary)' }}
-                                                        />
-                                                        <span className="text-xs font-black uppercase opacity-50" style={{ color: 'var(--text-secondary)' }}>Points</span>
-                                                    </div>
-                                                </div>
-                                                <button
-                                                    onClick={() => setQuestions(questions.filter((_, i) => i !== idx))}
-                                                    className="opacity-50 hover:opacity-100 font-bold text-sm transition-colors text-red-500"
-                                                >
-                                                    Supprimer
-                                                </button>
-                                            </div>
-                                        </motion.div>
-                                    ))}
-                                </AnimatePresence>
-                            </motion.div>
-                        </main>
-                    </div>
-                )}
+                                            {aiSettings.time_mode !== 'Pas de limite' && (
+                                                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}
+                                                    className="flex items-center gap-3 p-4 rounded-2xl border transition-all duration-500"
+                                                    style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>
+                                                    <Clock size={20} className="text-indigo-500" />
+                                                    <input
+                                                        type="number"
+                                                        value={aiSettings.time_value}
+                                                        onChange={(e) => setAiSettings({ ...aiSettings, time_value: parseInt(e.target.value) })}
+                                                        className="w-full bg-transparent outline-none font-black text-lg"
+                                                        style={{ color: 'var(--text-primary)' }}
+                                                    />
+                                                    <span className="text-xs font-black uppercase opacity-50">
+                                                        {aiSettings.time_mode === 'Mode Chrono' ? 'Sec/Q' : 'Min'}
+                                                    </span>
+                                                </motion.div>
+                                            )}
+                                        </div>
 
+                                        {/* Language */}
+                                        <div className="pt-4 border-t border-indigo-500/10 space-y-4">
+                                            <div>
+                                                <label className="text-[10px] font-black uppercase tracking-widest opacity-50" style={{ color: 'var(--text-secondary)' }}>Langue du Quiz</label>
+                                                <div className="grid grid-cols-2 gap-2 mt-2">
+                                                    {[
+                                                        { name: 'Français', icon: '🇫🇷' },
+                                                        { name: 'English', icon: '🇬🇧' },
+                                                        { name: 'Arabe', icon: '🇸🇦' },
+                                                        { name: 'Espagnol', icon: '🇪🇸' }
+                                                    ].map((lang) => (
+                                                        <button
+                                                            key={lang.name}
+                                                            onClick={() => setManualLanguage(lang.name)}
+                                                            className={`flex items-center justify-center gap-2 py-2 rounded-xl transition-all duration-300 font-bold text-xs ${manualLanguage === lang.name ? 'shadow-lg ring-2 ring-indigo-500' : 'opacity-60 hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/5'}`}
+                                                            style={{ 
+                                                                backgroundColor: manualLanguage === lang.name ? 'var(--bg-elevated)' : 'var(--bg-surface)',
+                                                                color: manualLanguage === lang.name ? 'var(--text-primary)' : 'var(--text-secondary)'
+                                                            }}
+                                                        >
+                                                            <span className="text-base">{lang.icon}</span> {lang.name}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            
+            {/* Footer */}
+            <div className="mt-12 flex items-center justify-between border-t pt-8 pb-12 transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
+                <button
+                    onClick={() => setStep('selector')}
+                    className="px-8 py-4 font-bold transition-colors flex items-center gap-2 opacity-50 hover:opacity-100"
+                    style={{ color: 'var(--text-primary)' }}
+                >
+                    <ChevronRight size={20} className="rotate-180" /> Retour
+                </button>
+
+                <div className="flex items-center gap-3">
+                    <motion.button
+                        whileHover={{ scale: 1.02, y: -2 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => handlePublish()}
+                        disabled={isLoading || !canSubmitManualQuiz}
+                        className={`px-8 py-4 rounded-full font-outfit font-black text-lg shadow-2xl transition-all flex items-center justify-center gap-3 ${canSubmitManualQuiz ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'opacity-50 bg-slate-500 text-white pointer-events-none'}`}
+                    >
+                        {isLoading ? 'Enregistrement...' : (editingQuiz ? 'Sauvegarder' : 'Publier Quiz')} <Check size={20} />
+                    </motion.button>
+
+                    <motion.button
+                        whileHover={{ scale: 1.02, y: -2 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => handlePublish({ launchAfterPublish: true })}
+                        disabled={isLoading || !canSubmitManualQuiz}
+                        className={`px-8 py-4 rounded-full font-outfit font-black text-lg shadow-2xl transition-all flex items-center justify-center gap-3 ${canSubmitManualQuiz ? 'bg-indigo-600 text-white shadow-indigo-500/20' : 'opacity-50 bg-slate-500 text-white pointer-events-none'}`}
+                    >
+                        {isLoading ? 'Préparation...' : (isSession ? 'Aller au lobby' : 'Jouer')} <Play size={20} />
+                    </motion.button>
+                </div>
+            </div>
+        </motion.div>
+    </div>
+)
+}
                 {step === 'success' && (
                     <div className="flex-1 flex flex-col items-center justify-center p-12 text-center transition-colors duration-500" style={{ backgroundColor: 'var(--bg-base)' }}>
                         <motion.div

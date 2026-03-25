@@ -8,6 +8,7 @@ import CreateCenter from './components/CreateCenter';
 import Profile from './components/Profile';
 import MyQuizzes from './components/MyQuizzes';
 import QuizPlayer from './components/QuizPlayer';
+import SessionLobby from './components/SessionLobby';
 
 function App() {
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -18,6 +19,10 @@ function App() {
   const [isCreateCenterOpen, setIsCreateCenterOpen] = useState(false);
   const [editingQuiz, setEditingQuiz] = useState(null); // Full quiz object for editing
   const [activeQuiz, setActiveQuiz] = useState(null); // Quiz currently being played
+  const [activeSessionCode, setActiveSessionCode] = useState(null); // The session code if in live mode
+  const [liveQuizSessionCode, setLiveQuizSessionCode] = useState(null);
+  const [liveQuizOptions, setLiveQuizOptions] = useState(null);
+  const [isSessionHost, setIsSessionHost] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false); // Launching transition state
   const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard' | 'profile' | 'myquizzes'
 
@@ -167,6 +172,8 @@ function App() {
   const handleLaunchQuiz = async (quizId) => {
     try {
       setIsLaunching(true);
+      setLiveQuizSessionCode(null);
+      setLiveQuizOptions(null);
       setIsCreateCenterOpen(false); // Close creator if open
       setEditingQuiz(null);
 
@@ -185,6 +192,50 @@ function App() {
     }
   };
 
+  const handleLaunchLiveSession = async (sessionCode, isHost = true) => {
+    setIsCreateCenterOpen(false); // Close creator if open
+    setEditingQuiz(null);
+    setCurrentView('dashboard');
+    setActiveSessionCode(sessionCode);
+    setIsSessionHost(isHost);
+  };
+
+  const handleLaunchSessionQuiz = async (sessionCode, sessionMeta = null) => {
+    try {
+      setIsLaunching(true);
+      setIsCreateCenterOpen(false);
+      setEditingQuiz(null);
+
+      const fullQuiz = await api.get(`/session/${sessionCode}/quiz`);
+
+      setLiveQuizSessionCode(sessionCode);
+      setLiveQuizOptions(sessionMeta?.settings || null);
+      setActiveSessionCode(null);
+      setTimeout(() => {
+        setActiveQuiz(fullQuiz);
+        setIsLaunching(false);
+      }, 2000);
+    } catch (err) {
+      console.error(" [App] Erreur lancement session quiz:", err);
+      alert("Impossible de lancer le quiz.");
+      setIsLaunching(false);
+    }
+  };
+
+  const handleJoinLiveSession = async (rawCode) => {
+    const code = String(rawCode || '').trim().toUpperCase();
+    if (!code) {
+      alert('Veuillez entrer un code de session.');
+      return;
+    }
+
+    setCurrentView('dashboard');
+    setIsCreateCenterOpen(false);
+    setEditingQuiz(null);
+    setActiveSessionCode(code);
+    setIsSessionHost(false);
+  };
+
   return (
     <div className="min-h-screen transition-colors duration-300" style={{ backgroundColor: 'var(--bg-base)', color: 'var(--text-primary)' }}>
       {/* Onboarding */}
@@ -197,9 +248,22 @@ function App() {
 
       {/* Main App Layout */}
       {!isCreateCenterOpen ? (
-        <>
-          {/* Header */}
-          {currentView === 'dashboard' && (
+        activeSessionCode ? (
+          <AnimatePresence mode="wait">
+            <SessionLobby 
+              sessionCode={activeSessionCode} 
+              isCreator={isSessionHost} 
+              currentUserId={currentUser?.id_utilisateur}
+              onLaunchGame={async (sessionMeta) => {
+                await handleLaunchSessionQuiz(activeSessionCode, sessionMeta);
+              }}
+              onClose={() => setActiveSessionCode(null)}
+            />
+          </AnimatePresence>
+        ) : (
+          <>
+            {/* Header */}
+            {currentView === 'dashboard' && (
             <Header
               onSearchFocusChange={setIsSearchActive}
               onOpenAuth={openAuthModal}
@@ -262,6 +326,7 @@ function App() {
             )}
           </AnimatePresence>
         </>
+        )
       ) : (
         /* Create Center Page */
         <AnimatePresence mode="wait">
@@ -273,6 +338,8 @@ function App() {
             currentUser={currentUser}
             editingQuiz={editingQuiz}
             onLaunchQuiz={handleLaunchQuiz}
+            onLaunchLiveSession={handleLaunchLiveSession}
+            onJoinLiveSession={handleJoinLiveSession}
           />
         </AnimatePresence>
       )}
@@ -317,7 +384,13 @@ function App() {
         {activeQuiz && (
           <QuizPlayer
             quiz={activeQuiz}
-            onClose={() => setActiveQuiz(null)}
+            liveSessionCode={liveQuizSessionCode}
+            liveSessionOptions={liveQuizOptions}
+            onClose={() => {
+              setActiveQuiz(null);
+              setLiveQuizSessionCode(null);
+              setLiveQuizOptions(null);
+            }}
           />
         )}
       </AnimatePresence>
