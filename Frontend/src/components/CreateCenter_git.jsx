@@ -126,7 +126,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz }) => {
     ];
     const handleAIGenerate = async () => {
         // Vérifier que l'utilisateur est connecté
-        const token = localStorage.getItem('qvibe_token');
+        const token = sessionStorage.getItem('qvibe_token');
         if (!token) {
             alert("❌ Vous devez être connecté pour générer un quiz avec l'IA.\n\nMerci de vous connecter d'abord.");
             return;

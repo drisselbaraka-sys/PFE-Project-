@@ -28,6 +28,51 @@ const TypographyStyle = () => (
     </style>
 );
 
+const formatSecondsToMmSs = (rawSeconds) => {
+    const totalSeconds = Math.max(0, Number.parseInt(rawSeconds, 10) || 0);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+const parseMmSsToSeconds = (value) => {
+    const cleaned = String(value || '').trim();
+    const match = cleaned.match(/^(\d{1,2}):(\d{1,2})$/);
+    if (!match) return null;
+
+    const minutes = Number.parseInt(match[1], 10);
+    const seconds = Number.parseInt(match[2], 10);
+    if (!Number.isFinite(minutes) || !Number.isFinite(seconds) || seconds > 59) {
+        return null;
+    }
+
+    return (minutes * 60) + seconds;
+};
+
+const normalizeTimeValueToSeconds = (timeMode, timeValue, timeValueUnit) => {
+    const parsed = Number.parseInt(timeValue, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        return timeMode === 'Timer Global' ? 600 : 30;
+    }
+
+    const unit = String(timeValueUnit || '').toLowerCase();
+    if (timeMode === 'Timer Global') {
+        return unit === 'seconds' ? parsed : parsed * 60;
+    }
+
+    if (timeMode === 'Mode Chrono') {
+        return unit === 'minutes' ? parsed * 60 : parsed;
+    }
+
+    return parsed;
+};
+
+const toLegacyDurationMinutes = (secondsValue) => {
+    const parsed = Number.parseInt(secondsValue, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return 10;
+    return Math.ceil(parsed / 60);
+};
+
 
 
 const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunchLiveSession, onJoinLiveSession }) => {
@@ -67,9 +112,11 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
         tone: 'Fun',
         question_type: 'Mélangé',
         time_mode: 'Pas de limite',
-        time_value: 30,
+        time_value: 1800,
+        time_value_unit: 'seconds',
         show_immediate_feedback: false
     });
+    const [timeInputValue, setTimeInputValue] = useState('30:00');
     const [files, setFiles] = useState([]);
     const [savedDocuments, setSavedDocuments] = useState([]);
     const [aiConfigBaseline, setAiConfigBaseline] = useState(null);
@@ -159,17 +206,36 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
             const initialOptionCount = Math.min(6, Math.max(2, editingQuiz.questions?.[0]?.options_reponses?.length || 2));
             setOptionCount(initialOptionCount);
             setManualLanguage(editingQuiz.parametres_generation?.language || 'Français');
-            if (!isAI && typeof editingQuiz.parametres_generation?.show_immediate_feedback === 'boolean') {
+            if (!isAI) {
+                const manualMode = editingQuiz.parametres_generation?.time_mode || 'Pas de limite';
+                const manualSeconds = normalizeTimeValueToSeconds(
+                    manualMode,
+                    editingQuiz.parametres_generation?.time_value,
+                    editingQuiz.parametres_generation?.time_value_unit
+                );
                 setAiSettings(prev => ({
                     ...prev,
-                    show_immediate_feedback: editingQuiz.parametres_generation.show_immediate_feedback
+                    time_mode: manualMode,
+                    time_value: manualSeconds,
+                    time_value_unit: 'seconds',
+                    show_immediate_feedback:
+                        typeof editingQuiz.parametres_generation?.show_immediate_feedback === 'boolean'
+                            ? editingQuiz.parametres_generation.show_immediate_feedback
+                            : prev.show_immediate_feedback
                 }));
             }
 
             if (isAI && editingQuiz.parametres_generation) {
+                const normalizedTimeSeconds = normalizeTimeValueToSeconds(
+                    editingQuiz.parametres_generation?.time_mode,
+                    editingQuiz.parametres_generation?.time_value,
+                    editingQuiz.parametres_generation?.time_value_unit
+                );
                 const mergedAiSettings = {
                     ...aiSettings,
-                    ...editingQuiz.parametres_generation
+                    ...editingQuiz.parametres_generation,
+                    time_value: normalizedTimeSeconds,
+                    time_value_unit: 'seconds',
                 };
                 const existingPrompt = editingQuiz.parametres_generation.prompt || '';
                 const existingSavedDocs = editingQuiz.parametres_generation.saved_documents || [];
@@ -200,6 +266,16 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
             setStep(isAI ? 'ai_config' : 'manual_editor');
         }
     }, [editingQuiz]);
+
+    useEffect(() => {
+        if (aiSettings.time_mode === 'Pas de limite') return;
+        const normalizedSeconds = normalizeTimeValueToSeconds(
+            aiSettings.time_mode,
+            aiSettings.time_value,
+            aiSettings.time_value_unit
+        );
+        setTimeInputValue(formatSecondsToMmSs(normalizedSeconds));
+    }, [aiSettings.time_mode, aiSettings.time_value, aiSettings.time_value_unit]);
 
     const applyOptionCountToQuestions = (count) => {
         setQuestions(prev => prev.map((question) => {
@@ -235,6 +311,62 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
         setSavedDocuments(prev => prev.filter((_, i) => i !== index));
     };
 
+    const handleTimeModeChange = (nextMode) => {
+        setAiSettings((prev) => {
+            const previousMode = prev.time_mode;
+            const normalizedCurrentSeconds = normalizeTimeValueToSeconds(
+                previousMode,
+                prev.time_value,
+                prev.time_value_unit
+            );
+
+            let nextSeconds = normalizedCurrentSeconds;
+            if (previousMode === 'Pas de limite' && nextMode === 'Timer Global') {
+                nextSeconds = 1800;
+            } else if (previousMode === 'Pas de limite' && nextMode === 'Mode Chrono') {
+                nextSeconds = 30;
+            }
+
+            return {
+                ...prev,
+                time_mode: nextMode,
+                time_value: nextSeconds,
+                time_value_unit: 'seconds',
+            };
+        });
+    };
+
+    const handleTimeInputChange = (rawValue) => {
+        const cleaned = String(rawValue || '').replace(/[^\d:]/g, '').slice(0, 5);
+        setTimeInputValue(cleaned);
+
+        const parsedSeconds = parseMmSsToSeconds(cleaned);
+        if (parsedSeconds === null) return;
+
+        setAiSettings((prev) => ({
+            ...prev,
+            time_value: parsedSeconds,
+            time_value_unit: 'seconds',
+        }));
+    };
+
+    const handleTimeInputBlur = () => {
+        const parsedSeconds = parseMmSsToSeconds(timeInputValue);
+        if (parsedSeconds !== null) {
+            const normalized = formatSecondsToMmSs(parsedSeconds);
+            setTimeInputValue(normalized);
+            setAiSettings((prev) => ({ ...prev, time_value: parsedSeconds, time_value_unit: 'seconds' }));
+            return;
+        }
+
+        const fallbackSeconds = normalizeTimeValueToSeconds(
+            aiSettings.time_mode,
+            aiSettings.time_value,
+            aiSettings.time_value_unit
+        );
+        setTimeInputValue(formatSecondsToMmSs(fallbackSeconds));
+    };
+
     const aiSourceTab = useState('prompt'); // prompt, document
 
     const buildAIConfigSnapshot = ({
@@ -262,6 +394,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
             question_type: aiSettingsState?.question_type,
             time_mode: aiSettingsState?.time_mode,
             time_value: aiSettingsState?.time_value,
+            time_value_unit: aiSettingsState?.time_value_unit,
             show_immediate_feedback: !!aiSettingsState?.show_immediate_feedback,
         },
         savedDocuments: (savedDocsState || []).map(doc => ({
@@ -325,7 +458,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
 
     const handleAIGenerate = async () => {
         // Vérifier que l'utilisateur est connecté
-        const token = localStorage.getItem('qvibe_token');
+        const token = sessionStorage.getItem('qvibe_token');
         if (!token) {
             alert("❌ Vous devez être connecté pour générer un quiz avec l'IA.\n\nMerci de vous connecter d'abord.");
             return;
@@ -360,7 +493,8 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                 language: aiSettings.language,
                 question_type: aiSettings.question_type,
                 time_mode: aiSettings.time_mode,
-                time_value: aiSettings.time_value,
+                time_value: normalizeTimeValueToSeconds(aiSettings.time_mode, aiSettings.time_value, aiSettings.time_value_unit),
+                time_value_unit: 'seconds',
                 tone: aiSettings.tone,
                 show_immediate_feedback: aiSettings.show_immediate_feedback
             };
@@ -424,7 +558,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                 // Even if user doesn't finish the review, the quiz is saved to database
                 const autoSave = async () => {
                     try {
-                        let finalImageUrl = '';
+                        let finalImageUrl = quizData.image_couverture_url || '';
 
                         // 1. If user picked a thumbnail, upload it first
                         if (thumbnailFile) {
@@ -445,7 +579,9 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                             titre: finalTitle,
                             description: finalDesc,
                             difficulte_moyenne: aiSettings.difficulty,
-                            duree_max_minutes: aiSettings.time_mode === 'Timer Global' ? aiSettings.time_value : 10,
+                            duree_max_minutes: aiSettings.time_mode === 'Timer Global'
+                                ? toLegacyDurationMinutes(normalizeTimeValueToSeconds(aiSettings.time_mode, aiSettings.time_value, aiSettings.time_value_unit))
+                                : 10,
                             visibilite: quizData.visibilite,
                             peut_etre_clone: quizData.peut_etre_clone,
                             tags: quizData.tags,
@@ -453,17 +589,28 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                             questions: generatedQuestions,
                             parametres_generation: {
                                 ...aiSettings,
+                                time_value: normalizeTimeValueToSeconds(aiSettings.time_mode, aiSettings.time_value, aiSettings.time_value_unit),
+                                time_value_unit: 'seconds',
                                 prompt: aiInput,
                                 saved_documents: suggestedMeta?.saved_documents || [],
                                 type_creation: 'ai'
                             }
                         };
 
-                        const response = await api.post('/quiz/manual', publishPayload);
-                        console.log(" [AI Auto-Save] Quiz persisted successfully to database.", response);
+                        let response;
+                        if (editingQuiz?.id_quiz) {
+                            response = await api.put(`/quiz/${editingQuiz.id_quiz}`, publishPayload);
+                            console.log(" [AI Auto-Save] Quiz mis à jour en mode édition.", response);
+                        } else if (generatedQuizId) {
+                            response = await api.put(`/quiz/${generatedQuizId}`, publishPayload);
+                            console.log(" [AI Auto-Save] Brouillon IA mis à jour.", response);
+                        } else {
+                            response = await api.post('/quiz/manual', publishPayload);
+                            console.log(" [AI Auto-Save] Quiz persisted successfully to database.", response);
+                        }
 
                         // Track the ID to avoid duplicates on manual publish
-                        if (response.id_quiz || response.data?.id_quiz) {
+                        if (!editingQuiz?.id_quiz && (response.id_quiz || response.data?.id_quiz)) {
                             setGeneratedQuizId(response.id_quiz || response.data?.id_quiz);
                         }
                     } catch (saveErr) {
@@ -553,10 +700,20 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                 };
             const finalQuestions = isAICreation ? sourceQuestions : translatedManual.questions;
             const selectedTimeMode = aiSettings.time_mode;
-            const selectedTimeValue = Number.isFinite(Number(aiSettings.time_value)) ? Number(aiSettings.time_value) : null;
+            const selectedTimeValue = normalizeTimeValueToSeconds(
+                selectedTimeMode,
+                aiSettings.time_value,
+                aiSettings.time_value_unit
+            );
             const computedDurationMinutes = selectedTimeMode === 'Timer Global'
-                ? (selectedTimeValue ?? sourceQuizData.duree_max_minutes)
+                ? toLegacyDurationMinutes(selectedTimeValue)
                 : null;
+
+            const normalizedTimeSettings = {
+                ...aiSettings,
+                time_value: selectedTimeValue,
+                time_value_unit: 'seconds',
+            };
 
             const payload = {
                 ...finalQuizData,
@@ -566,7 +723,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                 questions: finalQuestions,
                 parametres_generation: isAICreation
                     ? {
-                        ...aiSettings,
+                        ...normalizedTimeSettings,
                         type_creation: 'ai',
                         prompt: aiInput,
                         saved_documents: savedDocuments
@@ -575,7 +732,8 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                         type_creation: 'manual',
                         language: manualLanguage,
                         time_mode: aiSettings.time_mode,
-                        time_value: aiSettings.time_value,
+                        time_value: selectedTimeValue,
+                        time_value_unit: 'seconds',
                         show_immediate_feedback: aiSettings.show_immediate_feedback
                     }
             };
@@ -675,6 +833,14 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
         }
     };
 
+    const handleBackFromEditorSection = () => {
+        if (editingQuiz) {
+            onClose();
+            return;
+        }
+        setStep('selector');
+    };
+
     const handleBack = () => {
         if (isLoading) {
             if (abortControllerRef.current) {
@@ -682,6 +848,11 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
             }
             setIsLoading(false);
             setAiProgress(0);
+        }
+
+        if (editingQuiz) {
+            onClose();
+            return;
         }
 
         if (step === 'main_choice') onClose();
@@ -787,7 +958,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                 {isSession ? 'Lancez un défi en temps réel pour votre communauté.' : 'Transformez vos idées en défis interactifs.'}
                             </p>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                            <div className={`grid grid-cols-1 gap-8 ${isSession ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                                 {/* IA Card */}
                                 <motion.div
                                     whileHover={{ y: -5, scale: 1.01 }}
@@ -836,37 +1007,34 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                     </div>
                                 </motion.div>
 
-                                {/* Community Card */}
-                                <motion.div
-                                    whileHover={{ y: -5, scale: 1.01 }}
-                                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                                    onClick={() => {
-                                        if (isSession) {
+                                {isSession && (
+                                    <motion.div
+                                        whileHover={{ y: -5, scale: 1.01 }}
+                                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                                        onClick={() => {
                                             setSessionJoinCode('');
                                             setJoinSessionError('');
                                             setStep('join_session');
-                                        }
-                                    }}
-                                    className="p-8 rounded-[32px] bg-linear-to-br from-blue-500 to-cyan-600 text-white cursor-pointer group relative overflow-hidden shadow-xl shadow-blue-200"
-                                >
-                                    <div className="absolute top-0 right-0 p-6 opacity-20 group-hover:scale-110 transition-transform">
-                                        <Users size={120} />
-                                    </div>
-                                    <div className="relative z-10">
-                                        <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
-                                            <Users size={32} />
+                                        }}
+                                        className="p-8 rounded-[32px] bg-linear-to-br from-blue-500 to-cyan-600 text-white cursor-pointer group relative overflow-hidden shadow-xl shadow-blue-200"
+                                    >
+                                        <div className="absolute top-0 right-0 p-6 opacity-20 group-hover:scale-110 transition-transform">
+                                            <Users size={120} />
                                         </div>
-                                        <h3 className="text-2xl font-black mb-2">{isSession ? 'Accéder à une session' : 'Cloner / Importer'}</h3>
-                                        <p className="text-blue-100 text-sm leading-relaxed mb-8">
-                                            {isSession
-                                                ? 'Entrez un code de session pour rejoindre la salle d\'attente en direct.'
-                                                : 'Partez d\'un quiz existant de la communauté et adaptez-le à vos besoins.'}
-                                        </p>
-                                        <div className="flex items-center gap-2 font-bold text-sm">
-                                            {isSession ? 'Rejoindre' : 'Explorer'} <ChevronRight size={18} />
+                                        <div className="relative z-10">
+                                            <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center mb-6">
+                                                <Users size={32} />
+                                            </div>
+                                            <h3 className="text-2xl font-black mb-2">Accéder à une session</h3>
+                                            <p className="text-blue-100 text-sm leading-relaxed mb-8">
+                                                Entrez un code de session pour rejoindre la salle d'attente en direct.
+                                            </p>
+                                            <div className="flex items-center gap-2 font-bold text-sm">
+                                                Rejoindre <ChevronRight size={18} />
+                                            </div>
                                         </div>
-                                    </div>
-                                </motion.div>
+                                    </motion.div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1244,7 +1412,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                                 {['Pas de limite', 'Mode Chrono', 'Timer Global'].map(m => (
                                                     <button
                                                         key={m}
-                                                        onClick={() => setAiSettings({ ...aiSettings, time_mode: m })}
+                                                        onClick={() => handleTimeModeChange(m)}
                                                         className={`py-2 px-4 rounded-xl text-[10px] font-bold transition-all border-2 ${aiSettings.time_mode === m ? 'bg-white text-[#0d1117] border-white shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
                                                         style={{ backgroundColor: aiSettings.time_mode === m ? '' : 'var(--bg-elevated)', color: aiSettings.time_mode === m ? '' : 'var(--text-primary)' }}
                                                     >
@@ -1259,14 +1427,17 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                                     style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>
                                                     <Clock size={20} className="text-indigo-500" />
                                                     <input
-                                                        type="number"
-                                                        value={aiSettings.time_value}
-                                                        onChange={(e) => setAiSettings({ ...aiSettings, time_value: parseInt(e.target.value) })}
+                                                        type="text"
+                                                        value={timeInputValue}
+                                                        onChange={(e) => handleTimeInputChange(e.target.value)}
+                                                        onBlur={handleTimeInputBlur}
                                                         className="w-full bg-transparent outline-none font-black text-lg"
                                                         style={{ color: 'var(--text-primary)' }}
+                                                        placeholder="00:00"
+                                                        inputMode="numeric"
                                                     />
                                                     <span className="text-xs font-black uppercase opacity-50">
-                                                        {aiSettings.time_mode === 'Mode Chrono' ? 'Sec/Q' : 'Min'}
+                                                        mm:ss
                                                     </span>
                                                 </motion.div>
                                             )}
@@ -1322,7 +1493,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                             {/* Footer Controls */}
                             <div className="mt-12 flex items-center justify-between border-t pt-8 pb-12 transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
                                 <button
-                                    onClick={() => setStep(editingQuiz ? 'selector' : 'selector')} // Still go back to selector or main_choice
+                                    onClick={handleBackFromEditorSection}
                                     className="px-8 py-4 font-bold transition-colors flex items-center gap-2 opacity-50 hover:opacity-100"
                                     style={{ color: 'var(--text-primary)' }}
                                 >
@@ -1771,7 +1942,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                                 {['Pas de limite', 'Mode Chrono', 'Timer Global'].map(m => (
                                                     <button
                                                         key={m}
-                                                        onClick={() => setAiSettings({ ...aiSettings, time_mode: m })}
+                                                        onClick={() => handleTimeModeChange(m)}
                                                         className={`py-2 px-4 rounded-xl text-[10px] font-bold transition-all border-2 ${aiSettings.time_mode === m ? 'bg-white text-[#0d1117] border-white shadow-lg' : 'border-transparent opacity-50 hover:opacity-100'}`}
                                                         style={{ backgroundColor: aiSettings.time_mode === m ? '' : 'var(--bg-elevated)', color: aiSettings.time_mode === m ? '' : 'var(--text-primary)' }}
                                                     >
@@ -1786,14 +1957,17 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
                                                     style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>
                                                     <Clock size={20} className="text-indigo-500" />
                                                     <input
-                                                        type="number"
-                                                        value={aiSettings.time_value}
-                                                        onChange={(e) => setAiSettings({ ...aiSettings, time_value: parseInt(e.target.value) })}
+                                                        type="text"
+                                                        value={timeInputValue}
+                                                        onChange={(e) => handleTimeInputChange(e.target.value)}
+                                                        onBlur={handleTimeInputBlur}
                                                         className="w-full bg-transparent outline-none font-black text-lg"
                                                         style={{ color: 'var(--text-primary)' }}
+                                                        placeholder="00:00"
+                                                        inputMode="numeric"
                                                     />
                                                     <span className="text-xs font-black uppercase opacity-50">
-                                                        {aiSettings.time_mode === 'Mode Chrono' ? 'Sec/Q' : 'Min'}
+                                                        mm:ss
                                                     </span>
                                                 </motion.div>
                                             )}
@@ -1833,7 +2007,7 @@ const CreateCenter = ({ onClose, currentUser, editingQuiz, onLaunchQuiz, onLaunc
             {/* Footer */}
             <div className="mt-12 flex items-center justify-between border-t pt-8 pb-12 transition-colors duration-500" style={{ borderColor: 'var(--glass-border)' }}>
                 <button
-                    onClick={() => setStep('selector')}
+                    onClick={handleBackFromEditorSection}
                     className="px-8 py-4 font-bold transition-colors flex items-center gap-2 opacity-50 hover:opacity-100"
                     style={{ color: 'var(--text-primary)' }}
                 >

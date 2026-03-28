@@ -411,6 +411,9 @@ def _is_valid_question(q: Dict, expected_type: str = "any") -> bool:
         if len(options) < 2 or len(options) > 5:
             print("[- REJECT] Nombre d'options QCM hors 2-5:", options)
             return False
+        if isinstance(correct, list):
+            print("[- REJECT] QCM ne doit pas avoir plusieurs réponses correctes:", correct)
+            return False
 
     # No garbage
     combined = (q_text + str(correct)).lower()
@@ -443,6 +446,10 @@ def _fix_question_type(q: Dict, expected_type: str) -> Dict:
             q["reponse_correcte"] = [correct]
     elif expected_type == "QCM":
         q["type_question"] = "MCQ"
+        if isinstance(correct, list):
+            q["reponse_correcte"] = correct[0] if correct else ""
+        elif isinstance(correct, str):
+            q["reponse_correcte"] = _resolve_answer_value(correct, options)
     else:
         # For Mélangé or Any, keep AI type if valid, otherwise infer from payload
         ai_type = q.get("type_question")
@@ -458,6 +465,30 @@ def _fix_question_type(q: Dict, expected_type: str) -> Dict:
                 q["type_question"] = "Multiple"
             else:
                 q["type_question"] = "MCQ"
+
+    final_type = q.get("type_question")
+    if final_type == "MCQ":
+        normalized_correct = q.get("reponse_correcte")
+        if isinstance(normalized_correct, list):
+            normalized_correct = normalized_correct[0] if normalized_correct else ""
+        if isinstance(normalized_correct, str):
+            normalized_correct = _resolve_answer_value(normalized_correct, options)
+        q["reponse_correcte"] = normalized_correct
+    elif final_type == "Multiple":
+        normalized_correct = q.get("reponse_correcte")
+        if isinstance(normalized_correct, str):
+            normalized_correct = [normalized_correct] if normalized_correct else []
+        if isinstance(normalized_correct, list):
+            deduped = []
+            for item in normalized_correct:
+                resolved = _resolve_answer_value(item, options)
+                if resolved and not any(str(resolved).lower() == str(existing).lower() for existing in deduped):
+                    deduped.append(resolved)
+            q["reponse_correcte"] = deduped
+    elif final_type == "Vrai/Faux":
+        normalized_correct = _normalize_true_false_value(q.get("reponse_correcte"))
+        if normalized_correct:
+            q["reponse_correcte"] = normalized_correct
         
     if isinstance(q.get("options_reponses"), list):
         import random
@@ -766,6 +797,33 @@ def _build_question_schema(question_type: str) -> Dict:
                     "additionalProperties": False
                 }
             ]
+        }
+
+    if question_type == "QCM":
+        return {
+            "type": "object",
+            "properties": {
+                "texte_question": {"type": "string"},
+                "type_question": {"type": "string", "enum": ["MCQ"]},
+                "options_reponses": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 5
+                },
+                "reponse_correcte": {"type": "string"},
+                "explication": {"type": "string"},
+                "points": {"type": "integer"}
+            },
+            "required": [
+                "texte_question",
+                "type_question",
+                "options_reponses",
+                "reponse_correcte",
+                "explication",
+                "points"
+            ],
+            "additionalProperties": False
         }
 
     return {

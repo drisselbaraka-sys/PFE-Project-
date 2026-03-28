@@ -55,6 +55,7 @@ class QuizSummaryResponse(BaseModel):
     duree_max_minutes: Optional[int]
     time_mode: Optional[str] = None
     time_value: Optional[int] = None
+    time_value_unit: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

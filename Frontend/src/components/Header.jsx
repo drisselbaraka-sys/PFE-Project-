@@ -3,7 +3,17 @@ import { Search, Home, Compass, LogOut, ChevronDown, Plus, User, Layout, History
 import { motion, AnimatePresence } from 'framer-motion';
 import logo from '../../images/logo.png';
 
-const Header = ({ onSearchFocusChange, onOpenAuth, currentUser, onLogout, onCreateClick, onProfileClick, onMyQuizzesClick }) => {
+const Header = ({
+    onSearchFocusChange,
+    onOpenAuth,
+    currentUser,
+    onLogout,
+    onCreateClick,
+    onProfileClick,
+    onMyQuizzesClick,
+    searchValue = '',
+    onSearchChange,
+}) => {
     const [isSearchFocused, setIsSearchFocused] = useState(false);
     const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
@@ -82,6 +92,10 @@ const Header = ({ onSearchFocusChange, onOpenAuth, currentUser, onLogout, onCrea
                                 id="header-search"
                                 type="text"
                                 placeholder="Chercher un quiz sur l'histoire, la tech..."
+                                value={searchValue}
+                                onChange={(e) => {
+                                    if (onSearchChange) onSearchChange(e.target.value);
+                                }}
                                 onFocus={(e) => { handleSearchFocus(); e.target.style.backgroundColor = 'var(--bg-surface)'; }}
                                 onBlur={(e) => { handleSearchBlur(); e.target.style.backgroundColor = 'var(--bg-elevated)'; }}
                                 className="w-full border-2 border-transparent rounded-2xl py-3 pl-12 pr-4 focus:border-purple-200 dark:focus:border-violet-700/50 transition-all outline-none text-base font-medium placeholder:text-gray-400 dark:placeholder:text-gray-600"

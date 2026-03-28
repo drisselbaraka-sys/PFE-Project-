@@ -9,6 +9,8 @@ import Profile from './components/Profile';
 import MyQuizzes from './components/MyQuizzes';
 import QuizPlayer from './components/QuizPlayer';
 import SessionLobby from './components/SessionLobby';
+import PublicQuizGallery from './components/PublicQuizGallery';
+import PublicQuizDetails from './components/PublicQuizDetails';
 
 function App() {
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -25,6 +27,9 @@ function App() {
   const [isSessionHost, setIsSessionHost] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false); // Launching transition state
   const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard' | 'profile' | 'myquizzes'
+  const [dashboardSearchQuery, setDashboardSearchQuery] = useState('');
+  const [publicQuizDetailId, setPublicQuizDetailId] = useState(null);
+  const [publicQuizDetailRefresh, setPublicQuizDetailRefresh] = useState(0);
 
   // ── Dark mode engine ──
   const applyTheme = useCallback((theme) => {
@@ -51,48 +56,43 @@ function App() {
   }, [currentUser?.preferences?.theme, applyTheme]);
 
   useEffect(() => {
-    const token = localStorage.getItem('qvibe_token');
-    const savedUser = localStorage.getItem('qvibe_user');
+    const checkStorage = () => {
+      const savedUser = sessionStorage.getItem('qvibe_user');
+      const token = sessionStorage.getItem('qvibe_token');
 
-    // 1. Afficher immédiatement depuis localStorage — l'interface ne bloque pas
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
+      // Session persistence is tab-only. Each tab behaves like an isolated device.
+      if (savedUser && token) {
+        api.setToken(token);
+        try {
+          setCurrentUser(JSON.parse(savedUser));
+        } catch (err) {
+          console.warn('[App] Session locale invalide:', err);
+          sessionStorage.removeItem('qvibe_user');
+          sessionStorage.removeItem('qvibe_token');
+          api.setToken(null);
+          setCurrentUser(null);
+        }
+        return;
+      }
 
-    // 2. Rafraîchir silencieusement en arrière-plan (sans bloquer l'UI)
-    if (token) {
-      api.get('/auth/me')
-        .then((freshUser) => {
-          setCurrentUser(freshUser);
-          localStorage.setItem('qvibe_user', JSON.stringify(freshUser));
-        })
-        .catch((err) => {
-          console.warn('[App] Impossible de rafraîchir le profil:', err);
-          if (!savedUser) {
-            localStorage.removeItem('qvibe_token');
-          }
-        });
-    }
-  }, []);
-
-  // Update state and localStorage without redundant API calls
-  const handleUpdateUserLocal = (userData) => {
-    setCurrentUser(userData);
-    localStorage.setItem('qvibe_user', JSON.stringify(userData));
-  };
-
-  // Listen for global unauthorized events (401)
-  useEffect(() => {
-    const handleUnauthorized = () => {
-      console.warn(' [App] Session expirée, déconnexion...');
-      handleLogout();
-      alert('Votre session a expiré. Veuillez vous reconnecter.');
-      openAuthModal('login');
+      // Avoid phantom logged state when token/user storage is inconsistent.
+      if (savedUser || token) {
+        sessionStorage.removeItem('qvibe_user');
+        sessionStorage.removeItem('qvibe_token');
+      }
+      api.setToken(null);
+      setCurrentUser(null);
     };
 
-    window.addEventListener('auth:unauthorized', handleUnauthorized);
-    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    // Initial check on mount for this tab only.
+    checkStorage();
   }, []);
+
+  // Update state and tab-local session without redundant API calls
+  const handleUpdateUserLocal = (userData) => {
+    setCurrentUser(userData);
+    sessionStorage.setItem('qvibe_user', JSON.stringify(userData));
+  };
 
   const openAuthModal = (mode = 'login') => {
     setAuthModalMode(mode);
@@ -101,7 +101,7 @@ function App() {
 
   const handleAuthSuccess = (userData) => {
     setCurrentUser(userData);
-    localStorage.setItem('qvibe_user', JSON.stringify(userData));
+    sessionStorage.setItem('qvibe_user', JSON.stringify(userData));
     // Check if onboarding is needed
     if (!userData.preferences || !userData.preferences.onboarding_completed) {
       setShowOnboarding(true);
@@ -121,7 +121,7 @@ function App() {
 
       // Update local state with fresh data from backend
       setCurrentUser(response);
-      localStorage.setItem('qvibe_user', JSON.stringify(response));
+      sessionStorage.setItem('qvibe_user', JSON.stringify(response));
     } catch (error) {
       console.error(' [App] Erreur lors de la mise à jour du profil:', error);
       alert('Erreur lors de la sauvegarde du profil.');
@@ -137,7 +137,7 @@ function App() {
     const updatedUser = { ...currentUser, preferences: updatedPreferences };
 
     setCurrentUser(updatedUser);
-    localStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
+    sessionStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
 
     // Save to server
     try {
@@ -152,16 +152,18 @@ function App() {
 
   const handleOnboardingComplete = (updatedUser) => {
     setCurrentUser(updatedUser);
-    localStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
+    sessionStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
     setShowOnboarding(false);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('qvibe_token');
-    localStorage.removeItem('qvibe_user');
+    sessionStorage.removeItem('qvibe_token');
+    sessionStorage.removeItem('qvibe_user');
+    api.setToken(null);
     setCurrentUser(null);
     setEditingQuiz(null);
     setCurrentView('dashboard');
+    setPublicQuizDetailId(null);
   };
 
   const handleEditQuiz = (quiz) => {
@@ -189,6 +191,52 @@ function App() {
       console.error(" [App] Erreur lancement quiz:", err);
       alert("Impossible de lancer le quiz.");
       setIsLaunching(false);
+    }
+  };
+
+  const handleLaunchPublicQuiz = async (quizId) => {
+    try {
+      setIsLaunching(true);
+      setLiveQuizSessionCode(null);
+      setLiveQuizOptions(null);
+      setIsCreateCenterOpen(false);
+      setEditingQuiz(null);
+
+      const fullQuiz = await api.get(`/quiz/public/${quizId}`);
+
+      setTimeout(() => {
+        setActiveQuiz(fullQuiz);
+        setIsLaunching(false);
+      }, 1200);
+    } catch (err) {
+      console.error(' [App] Erreur lancement quiz public:', err);
+      alert('Impossible de lancer ce quiz public.');
+      setIsLaunching(false);
+    }
+  };
+
+  const handleOpenPublicQuizDetails = (quizId) => {
+    setPublicQuizDetailId(quizId);
+    setCurrentView('public_quiz_detail');
+    setIsSearchActive(false);
+    setIsCreateCenterOpen(false);
+    setEditingQuiz(null);
+  };
+
+  const handleRequestPublicQuizEdit = async (quizId) => {
+    if (!currentUser) {
+      openAuthModal('login');
+      alert('Vous devez vous connecter pour modifier ou cloner ce quiz.');
+      return;
+    }
+
+    try {
+      const editableQuiz = await api.post(`/quiz/public/${quizId}/clone`, {});
+      setEditingQuiz(editableQuiz);
+      setIsCreateCenterOpen(true);
+    } catch (err) {
+      console.error(' [App] Erreur clonage/modification quiz public:', err);
+      alert(err?.detail || 'Impossible de modifier ce quiz.');
     }
   };
 
@@ -269,6 +317,8 @@ function App() {
               onOpenAuth={openAuthModal}
               currentUser={currentUser}
               onLogout={handleLogout}
+              searchValue={dashboardSearchQuery}
+              onSearchChange={setDashboardSearchQuery}
               onCreateClick={() => {
                 setEditingQuiz(null);
                 setIsCreateCenterOpen(true);
@@ -306,22 +356,38 @@ function App() {
                 onEditQuiz={handleEditQuiz}
                 onLaunchQuiz={handleLaunchQuiz}
               />
+            ) : currentView === 'public_quiz_detail' && publicQuizDetailId ? (
+              <PublicQuizDetails
+                key={`public-quiz-${publicQuizDetailId}`}
+                quizId={publicQuizDetailId}
+                currentUser={currentUser}
+                refreshSignal={publicQuizDetailRefresh}
+                onBack={() => {
+                  setCurrentView('dashboard');
+                  setPublicQuizDetailId(null);
+                  setIsSearchActive(false);
+                }}
+                onPlayQuiz={handleLaunchPublicQuiz}
+                onRequestEdit={handleRequestPublicQuizEdit}
+                onOpenAuth={openAuthModal}
+              />
             ) : (
               <motion.main
                 key="dashboard"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="pt-40 px-6 transition-all duration-500"
+                className="transition-all duration-500"
               >
-                <div className="max-w-7xl mx-auto">
-                  {/* Dashboard Content */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-12">
-                    {[1, 2, 3, 4, 5, 6].map((i) => (
-                      <div key={i} className="h-80 rounded-3xl shadow-sm border transition-all cursor-pointer hover:shadow-xl hover:-translate-y-1 duration-300" style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border)' }}></div>
-                    ))}
-                  </div>
-                </div>
+                <PublicQuizGallery
+                  searchQuery={dashboardSearchQuery}
+                  onLaunchQuiz={handleLaunchPublicQuiz}
+                  onCreateQuiz={() => {
+                    setEditingQuiz(null);
+                    setIsCreateCenterOpen(true);
+                  }}
+                  onOpenQuizDetails={handleOpenPublicQuizDetails}
+                />
               </motion.main>
             )}
           </AnimatePresence>
@@ -384,8 +450,21 @@ function App() {
         {activeQuiz && (
           <QuizPlayer
             quiz={activeQuiz}
+            currentUser={currentUser}
             liveSessionCode={liveQuizSessionCode}
             liveSessionOptions={liveQuizOptions}
+            onPublicSubmissionSuccess={({ quizId }) => {
+              const targetQuizId = quizId || activeQuiz?.id_quiz || publicQuizDetailId;
+              setActiveQuiz(null);
+              setLiveQuizSessionCode(null);
+              setLiveQuizOptions(null);
+
+              if (targetQuizId) {
+                setPublicQuizDetailId(targetQuizId);
+                setCurrentView('public_quiz_detail');
+                setPublicQuizDetailRefresh((prev) => prev + 1);
+              }
+            }}
             onClose={() => {
               setActiveQuiz(null);
               setLiveQuizSessionCode(null);
@@ -407,3 +486,4 @@ function App() {
 }
 
 export default App;
+

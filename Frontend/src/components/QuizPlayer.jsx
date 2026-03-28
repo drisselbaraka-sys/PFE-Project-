@@ -72,12 +72,166 @@ const normalizeToArray = (value) => {
     return splitPossibleMultiAnswerString(value);
 };
 
+const sanitizeAikenLine = (value, fallback = '') => {
+    const normalized = String(value ?? fallback)
+        .replace(/\r?\n+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized || fallback;
+};
+
+const stripOptionPrefix = (value) => String(value || '')
+    .replace(/^\s*(?:option|reponse|réponse)\s*[A-Z0-9]+\s*[:)\-.]?\s*/i, '')
+    .replace(/^\s*[A-Z]\s*[:)\-.]\s*/i, '')
+    .trim();
+
+const extractOptionIndexFromToken = (value, optionsLength) => {
+    const raw = String(value || '').trim();
+    if (!raw) return -1;
+
+    const compact = raw.replace(/\s+/g, ' ');
+    const match = compact.match(/^(?:option|reponse|réponse)?\s*([A-Za-z]|\d+)\s*[:)\-.]?$/i);
+    if (!match) return -1;
+
+    const token = match[1];
+    if (/^[A-Za-z]$/.test(token)) {
+        const idx = token.toUpperCase().charCodeAt(0) - 65;
+        return idx >= 0 && idx < optionsLength ? idx : -1;
+    }
+
+    const numeric = Number.parseInt(token, 10);
+    if (!Number.isFinite(numeric)) return -1;
+    const idx = numeric - 1;
+    return idx >= 0 && idx < optionsLength ? idx : -1;
+};
+
+const resolveAnswerTokenToIndex = (answerToken, options) => {
+    if (!Array.isArray(options) || options.length === 0) return -1;
+
+    const directIndex = extractOptionIndexFromToken(answerToken, options.length);
+    if (directIndex >= 0) return directIndex;
+
+    const normalizedToken = normalizeAnswerToken(answerToken);
+    const normalizedTokenWithoutPrefix = normalizeAnswerToken(stripOptionPrefix(answerToken));
+
+    if (!normalizedToken && !normalizedTokenWithoutPrefix) return -1;
+
+    const normalizedOptions = options.map((option) => ({
+        full: normalizeAnswerToken(option),
+        stripped: normalizeAnswerToken(stripOptionPrefix(option)),
+    }));
+
+    const exactIndex = normalizedOptions.findIndex(({ full, stripped }) => (
+        full === normalizedToken
+        || stripped === normalizedToken
+        || full === normalizedTokenWithoutPrefix
+        || stripped === normalizedTokenWithoutPrefix
+    ));
+    if (exactIndex >= 0) return exactIndex;
+
+    const fuzzyIndex = normalizedOptions.findIndex(({ full, stripped }) => {
+        const candidates = [normalizedToken, normalizedTokenWithoutPrefix].filter(Boolean);
+        return candidates.some((candidate) => (
+            candidate.length > 2
+            && (
+                full.includes(candidate)
+                || stripped.includes(candidate)
+                || candidate.includes(full)
+                || candidate.includes(stripped)
+            )
+        ));
+    });
+
+    return fuzzyIndex;
+};
+
+const resolveAnswerToOptionIndices = (answerValue, options) => {
+    const answerTokens = normalizeToArray(answerValue);
+    const indexes = answerTokens
+        .map((token) => resolveAnswerTokenToIndex(token, options))
+        .filter((idx) => idx >= 0 && idx < options.length);
+
+    return [...new Set(indexes)].sort((a, b) => a - b);
+};
+
+const isSingleAnswerType = (question) => {
+    const typeValue = String(question?.type_question || '').trim().toLowerCase();
+    return (
+        typeValue.includes('mcq')
+        || typeValue.includes('qcm')
+        || typeValue.includes('vrai')
+        || typeValue.includes('faux')
+        || typeValue.includes('true')
+        || typeValue.includes('false')
+    );
+};
+
+const getResolvedCorrectOptionIndices = (question) => {
+    const options = Array.isArray(question?.options_reponses) ? question.options_reponses : [];
+    const resolved = resolveAnswerToOptionIndices(question?.reponse_correcte, options);
+
+    if (isSingleAnswerType(question) && resolved.length > 1) {
+        return [resolved[0]];
+    }
+
+    return resolved;
+};
+
+const formatClockFromSeconds = (rawSeconds) => {
+    const totalSeconds = Math.max(0, Number.parseInt(rawSeconds, 10) || 0);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+const resolveConfiguredTimeSeconds = (quizPayload, mode) => {
+    const generation = quizPayload?.parametres_generation || {};
+    const rawTimeValue = Number.parseInt(generation?.time_value, 10);
+    const timeValueUnit = String(generation?.time_value_unit || '').toLowerCase();
+
+    if (Number.isFinite(rawTimeValue) && rawTimeValue >= 0) {
+        if (mode === 'Timer Global') {
+            return timeValueUnit === 'seconds' ? rawTimeValue : rawTimeValue * 60;
+        }
+        if (mode === 'Mode Chrono') {
+            return timeValueUnit === 'minutes' ? rawTimeValue * 60 : rawTimeValue;
+        }
+    }
+
+    if (mode === 'Timer Global') {
+        const fallbackMinutes = Number.parseInt(quizPayload?.duree_max_minutes, 10);
+        return (Number.isFinite(fallbackMinutes) && fallbackMinutes > 0 ? fallbackMinutes : 10) * 60;
+    }
+
+    if (mode === 'Mode Chrono') {
+        return 30;
+    }
+
+    return 0;
+};
+
 const isAnswerCorrectForQuestion = (question, answer) => {
+    const options = Array.isArray(question?.options_reponses) ? question.options_reponses : [];
+    const correctIndexes = getResolvedCorrectOptionIndices(question);
+    const userIndexes = resolveAnswerToOptionIndices(answer, options);
+
+    if (userIndexes.length === 0) return false;
+    if (correctIndexes.length > 0) {
+        if (isSingleAnswerType(question)) {
+            return userIndexes.length === 1 && userIndexes[0] === correctIndexes[0];
+        }
+
+        if (userIndexes.length !== correctIndexes.length) return false;
+
+        const correctSet = new Set(correctIndexes);
+        return userIndexes.every((idx) => correctSet.has(idx));
+    }
+
     const correctAnswers = normalizeToArray(question?.reponse_correcte)
-        .map(normalizeAnswerToken)
+        .map((item) => normalizeAnswerToken(stripOptionPrefix(item)))
         .filter(Boolean);
     const userAnswerList = normalizeToArray(answer)
-        .map(normalizeAnswerToken)
+        .map((item) => normalizeAnswerToken(stripOptionPrefix(item)))
         .filter(Boolean);
 
     if (userAnswerList.length === 0) return false;
@@ -93,6 +247,7 @@ const isAnswerCorrectForQuestion = (question, answer) => {
 const isMultipleAnswerQuestion = (question) => {
     const typeValue = String(question?.type_question || '').trim().toLowerCase();
     if (typeValue.includes('multiple') || typeValue.includes('plusieurs')) return true;
+    if (isSingleAnswerType(question)) return false;
     const correctAnswers = normalizeToArray(question?.reponse_correcte);
     return correctAnswers.length > 1;
 };
@@ -107,7 +262,17 @@ const getQuestionTypeDisplay = (question) => {
     return question?.type_question || 'QCM';
 };
 
-const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel = 'PUBLIER', liveSessionCode = null, liveSessionOptions = null }) => {
+const QuizPlayer = ({
+    quiz,
+    onClose,
+    isReview = false,
+    onPublish,
+    publishLabel = 'PUBLIER',
+    liveSessionCode = null,
+    liveSessionOptions = null,
+    currentUser = null,
+    onPublicSubmissionSuccess = null,
+}) => {
     const questions = quiz.questions || [];
     const [currentIndex, setCurrentIndex] = useState(0);
     const [chronoActiveIndex, setChronoActiveIndex] = useState(0);
@@ -118,13 +283,18 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
     const [isBilan, setIsBilan] = useState(false);
     const [userRating, setUserRating] = useState(0);
     const [userComment, setUserComment] = useState('');
+    const [confirmedMultipleAnswers, setConfirmedMultipleAnswers] = useState({});
+    const [submittingPublicFeedback, setSubmittingPublicFeedback] = useState(false);
+    const [publicFeedbackSuccess, setPublicFeedbackSuccess] = useState(false);
+    const [scoreSubmitted, setScoreSubmitted] = useState(false);
+    const [publicFeedbackError, setPublicFeedbackError] = useState('');
     const timerRef = useRef(null);
     const userAnswersRef = useRef({});
 
     const q = questions[currentIndex];
     const timeMode = (quiz.parametres_generation?.time_mode) || 'Timer Global';
     const isChronoMode = timeMode === 'Mode Chrono';
-    const timeLimit = (quiz.parametres_generation?.time_value) || quiz.duree_max_minutes || 10;
+    const timeLimitSeconds = resolveConfiguredTimeSeconds(quiz, timeMode);
     const showImmediateFeedback = isBilan ? true : ((quiz.parametres_generation?.show_immediate_feedback) ?? true);
     const reportDateLabel = new Date().toLocaleString();
     const participantName = quiz?.createur?.nom_affichage || quiz?.nom_createur || quiz?.id_utilisateur || 'Participant';
@@ -169,6 +339,24 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
     const formattedUserRating = userRating > 0 ? `${Number(userRating).toFixed(1)}/5` : 'Non noté';
     const isLiveSessionParticipant = Boolean(liveSessionCode);
     const hideDetailedLiveReport = isLiveSessionParticipant && (liveSessionOptions?.reports_visible_to_participants === false);
+    const canSubmitPublicFeedback = Boolean(
+        currentUser?.id_utilisateur
+        && quiz?.visibilite === 'public'
+        && !isLiveSessionParticipant
+        && !isReview
+    );
+
+    const isCurrentQuestionMultiple = isMultipleAnswerQuestion(q);
+    const isCurrentQuestionConfirmed = !!confirmedMultipleAnswers[currentIndex];
+    const shouldRevealFeedbackAtIndex = (index) => {
+        if (isGlobalTimeUp || isBilan) return true;
+        if (!showImmediateFeedback) return false;
+
+        const question = questions[index];
+        if (!isMultipleAnswerQuestion(question)) return true;
+        return !!confirmedMultipleAnswers[index];
+    };
+    const shouldRevealCurrentQuestion = shouldRevealFeedbackAtIndex(currentIndex);
 
     const getAdvice = () => {
         if (accuracy >= 90) return "Impressionnant ! Vous maîtrisez parfaitement ce sujet. Pourquoi ne pas essayer un niveau plus difficile ou partager votre savoir ?";
@@ -197,6 +385,40 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
             pointsTotal: getQuestionPoints(question)
         };
     });
+
+    useEffect(() => {
+        if (!isFinished || !canSubmitPublicFeedback || scoreSubmitted || !quiz?.id_quiz) {
+            return;
+        }
+
+        const questionBreakdown = detailedStats.map((row) => ({
+            index: row.index,
+            question: row.question,
+            user_answer: row.userAnswer,
+            correct_answer: row.correctAnswer,
+            result: row.result,
+            points_earned: row.pointsEarned,
+            points_total: row.pointsTotal,
+        }));
+
+        let cancelled = false;
+
+        api.post(`/quiz/public/${quiz.id_quiz}/submit`, {
+            score,
+            total_score: totalPossibleScore,
+            note: null,
+            commentaire: null,
+            question_breakdown: questionBreakdown,
+        }).then(() => {
+            if (!cancelled) setScoreSubmitted(true);
+        }).catch((e) => {
+            console.error('Score auto-submit failed', e);
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [isFinished, canSubmitPublicFeedback, scoreSubmitted, quiz?.id_quiz, detailedStats, score, totalPossibleScore]);
 
     const isQuestionAnsweredAtIndex = (index) => {
         const question = questions[index];
@@ -250,6 +472,64 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
             XLSX.utils.book_append_sheet(workbook, summarySheet, 'Résumé');
             XLSX.utils.book_append_sheet(workbook, detailSheet, 'Détails');
             XLSX.writeFile(workbook, `quiz-report-${Date.now()}.xlsx`);
+            return;
+        }
+
+        if (format === 'aiken') {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const blocks = questions.map((question, index) => {
+                const questionTitle = sanitizeAikenLine(
+                    question?.texte_question,
+                    `Question ${index + 1}`
+                );
+
+                const optionValues = (Array.isArray(question?.options_reponses) ? question.options_reponses : [])
+                    .map((option) => sanitizeAikenLine(option))
+                    .filter(Boolean)
+                    .slice(0, 26);
+
+                const uniqueCorrectIndices = resolveAnswerToOptionIndices(
+                    question?.reponse_correcte,
+                    optionValues
+                );
+
+                const optionsToExport = optionValues.length
+                    ? optionValues
+                    : ['Option indisponible'];
+
+                const answerLetters = uniqueCorrectIndices.length
+                    ? uniqueCorrectIndices.map((idx) => alphabet[idx]).join(',')
+                    : 'A';
+
+                const optionLines = optionsToExport.map(
+                    (option, optionIndex) => `${alphabet[optionIndex]}. ${option}`
+                );
+
+                return [
+                    questionTitle,
+                    ...optionLines,
+                    `ANSWER: ${answerLetters}`,
+                ].join('\n');
+            });
+
+            const aikenContent = [
+                `# Quiz: ${sanitizeAikenLine(quiz?.titre, 'Quiz')}`,
+                `# Export: ${reportDateLabel}`,
+                '# Format: AIKEN',
+                '',
+                blocks.join('\n\n'),
+                '',
+            ].join('\n');
+
+            const blob = new Blob([aikenContent], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `quiz-report-${Date.now()}-aiken.txt`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
             return;
         }
 
@@ -387,13 +667,9 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
     useEffect(() => {
         if (timeMode === 'Pas de limite' || isBilan) return;
         setIsGlobalTimeUp(false);
-        if (isChronoMode) {
-            setChronoActiveIndex(0);
-            setTimeLeft(timeLimit);
-        } else {
-            setTimeLeft(timeLimit * 60);
-        }
-    }, [timeMode, timeLimit, isBilan, isChronoMode]);
+        if (isChronoMode) setChronoActiveIndex(0);
+        setTimeLeft(timeLimitSeconds);
+    }, [timeMode, timeLimitSeconds, isBilan, isChronoMode]);
 
     useEffect(() => {
         if (timeMode !== 'Timer Global' || isGlobalTimeUp || isFinished || isBilan) return;
@@ -417,7 +693,7 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
         if (!isChronoMode || isGlobalTimeUp || isFinished || isBilan) return;
         if (timerRef.current) clearInterval(timerRef.current);
 
-        setTimeLeft(timeLimit);
+        setTimeLeft(timeLimitSeconds);
         timerRef.current = setInterval(() => {
             setTimeLeft(prev => {
                 if (prev <= 1) {
@@ -437,12 +713,13 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
         }, 1000);
 
         return () => clearInterval(timerRef.current);
-    }, [isChronoMode, chronoActiveIndex, timeLimit, isGlobalTimeUp, isFinished, isBilan]);
+    }, [isChronoMode, chronoActiveIndex, timeLimitSeconds, isGlobalTimeUp, isFinished, isBilan]);
 
     const handleSelectOption = (opt) => {
         if (isBilan) return; // Disable selection in bilan mode
         if (isChronoMode && currentIndex !== chronoActiveIndex) return;
         if (!isChronoMode && !isMultipleAnswerQuestion(q) && userAnswers[currentIndex] && showImmediateFeedback) return;
+        if (showImmediateFeedback && isMultipleAnswerQuestion(q) && confirmedMultipleAnswers[currentIndex]) return;
         if (isGlobalTimeUp || isFinished) return;
 
         if (isMultipleAnswerQuestion(q)) {
@@ -453,9 +730,21 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                     : [...current, opt];
                 return { ...prev, [currentIndex]: updated };
             });
+            if (showImmediateFeedback && !isBilan) {
+                setConfirmedMultipleAnswers((prev) => ({ ...prev, [currentIndex]: false }));
+            }
         } else {
             setUserAnswers(prev => ({ ...prev, [currentIndex]: opt }));
         }
+    };
+
+    const handleConfirmMultipleAnswer = () => {
+        if (!showImmediateFeedback || isBilan || !isMultipleAnswerQuestion(q)) return;
+        const currentAnswer = userAnswers[currentIndex];
+        const hasAnswer = Array.isArray(currentAnswer) ? currentAnswer.length > 0 : !!currentAnswer;
+        if (!hasAnswer) return;
+
+        setConfirmedMultipleAnswers((prev) => ({ ...prev, [currentIndex]: true }));
     };
 
     const isAnswered = isQuestionAnsweredAtIndex(currentIndex);
@@ -494,6 +783,47 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
 
         syncProgress();
     }, [isLiveSessionParticipant, isReview, liveSessionCode, answeredCount, questions.length, currentIndex, score, totalPossibleScore, isFinished]);
+
+    const handleSubmitPublicFeedback = async () => {
+        if (!canSubmitPublicFeedback || !quiz?.id_quiz) return;
+
+        const cleanComment = String(userComment || '').trim();
+        if (!cleanComment) {
+            setPublicFeedbackError('Veuillez saisir un commentaire avant l\'envoi.');
+            return;
+        }
+
+        setSubmittingPublicFeedback(true);
+        setPublicFeedbackError('');
+
+        try {
+            const questionBreakdown = detailedStats.map((row) => ({
+                index: row.index,
+                question: row.question,
+                user_answer: row.userAnswer,
+                correct_answer: row.correctAnswer,
+                result: row.result,
+                points_earned: row.pointsEarned,
+                points_total: row.pointsTotal,
+            }));
+
+            await api.post(`/quiz/public/${quiz.id_quiz}/comments`, {
+                note: userRating > 0 ? userRating : null,
+                contenu: cleanComment,
+            });
+
+            setPublicFeedbackSuccess(true);
+
+            if (onPublicSubmissionSuccess) {
+                onPublicSubmissionSuccess({ quizId: quiz.id_quiz });
+            }
+        } catch (err) {
+            console.error(' [QuizPlayer] Erreur soumission publique:', err);
+            setPublicFeedbackError(err?.detail || err?.message || 'Impossible d\'envoyer votre score et commentaire.');
+        } finally {
+            setSubmittingPublicFeedback(false);
+        }
+    };
 
     return (
         <motion.div
@@ -544,7 +874,7 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                 <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Temps</span>
                             </div>
                             <div className={`text-xl font-black ${timeLeft < 10 ? 'text-red-500' : ''}`} style={{ color: timeLeft < 10 ? '' : 'var(--text-primary)' }}>
-                                {timeMode === 'Timer Global' ? `${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}` : `${timeLeft}s`}
+                                {formatClockFromSeconds(timeLeft)}
                             </div>
                         </div>
                     )}
@@ -554,6 +884,7 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                         {questions.map((_, idx) => {
                             const isAnsweredIdx = isQuestionAnsweredAtIndex(idx);
                             const isCorrectIdx = isAnswerCorrectForQuestion(questions[idx], userAnswers[idx]);
+                            const shouldRevealThisQuestion = shouldRevealFeedbackAtIndex(idx);
 
                             return (
                                 <button
@@ -569,7 +900,7 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                     className={`w-full aspect-square rounded-xl flex items-center justify-center font-bold text-xs transition-all border-2
                                     ${currentIndex === idx ? 'bg-indigo-600 text-white border-indigo-600 scale-110 shadow-lg shadow-indigo-500/20' :
                                             isAnsweredIdx ?
-                                                ((showImmediateFeedback || isGlobalTimeUp) ?
+                                                ((shouldRevealThisQuestion || isGlobalTimeUp) ?
                                                     (isCorrectIdx ? 'bg-green-500 text-white border-green-500' : 'bg-red-500 text-white border-red-500') :
                                                     'bg-indigo-500/20 text-indigo-500 border-indigo-500/30') :
                                                 'border-transparent text-slate-400 hover:border-slate-500/20'}`}
@@ -607,7 +938,11 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                             }}
                             disabled={isChronoMode
                                 ? (isGlobalTimeUp || (currentIndex === chronoActiveIndex && !isAnswered))
-                                : (currentIndex === questions.length - 1 || (!isAnswered && !showImmediateFeedback && !isGlobalTimeUp))}
+                                : (
+                                    currentIndex === questions.length - 1
+                                    || (!isAnswered && !showImmediateFeedback && !isGlobalTimeUp)
+                                    || (showImmediateFeedback && isCurrentQuestionMultiple && isAnswered && !isCurrentQuestionConfirmed)
+                                )}
                             className="p-3 bg-indigo-600 text-white rounded-xl font-bold disabled:opacity-30 hover:bg-indigo-700 transition-all flex items-center justify-center shadow-lg shadow-indigo-500/20"
                         >
                             <ArrowRight size={18} />
@@ -674,15 +1009,15 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                         ? userAnswers[currentIndex].includes(opt)
                                         : userAnswers[currentIndex] === opt;
 
-                                    const normalizedCorrectAnswers = normalizeToArray(q?.reponse_correcte).map(normalizeAnswerToken);
-                                    const isCorrectOpt = normalizedCorrectAnswers.includes(normalizeAnswerToken(opt));
+                                    const resolvedCorrectIndexes = getResolvedCorrectOptionIndices(q);
+                                    const isCorrectOpt = resolvedCorrectIndexes.includes(idx);
                                     const isEditableChronoQuestion = isChronoMode && currentIndex === chronoActiveIndex && !isGlobalTimeUp && !isFinished && !isBilan;
 
                                     let style = "border-transparent text-slate-800 dark:text-slate-300 hover:border-indigo-500/50 cursor-pointer shadow-sm transition-all duration-300";
                                     let bgStyle = { backgroundColor: 'var(--bg-elevated)' };
 
                                     if (isAnswered) {
-                                        if ((showImmediateFeedback || isGlobalTimeUp) && !isEditableChronoQuestion) {
+                                        if ((shouldRevealCurrentQuestion || isGlobalTimeUp) && !isEditableChronoQuestion) {
                                             if (isCorrectOpt) {
                                                 style = "border-green-500 text-green-500 border-2 cursor-default shadow-lg shadow-green-500/10";
                                                 bgStyle = { backgroundColor: 'rgba(34, 197, 94, 0.1)' };
@@ -704,24 +1039,29 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                             key={idx}
                                             whileHover={(!isAnswered || !showImmediateFeedback) ? { y: -3, scale: 1.01 } : {}}
                                             onClick={() => handleSelectOption(opt)}
-                                            disabled={((!isChronoMode && isAnswered && showImmediateFeedback && !isMultipleAnswerQuestion(q)) || isGlobalTimeUp || (isChronoMode && currentIndex !== chronoActiveIndex))}
+                                            disabled={(
+                                                (!isChronoMode && isAnswered && showImmediateFeedback && !isMultipleAnswerQuestion(q))
+                                                || (showImmediateFeedback && isMultipleAnswerQuestion(q) && isCurrentQuestionConfirmed)
+                                                || isGlobalTimeUp
+                                                || (isChronoMode && currentIndex !== chronoActiveIndex)
+                                            )}
                                             className={`group relative transition-all text-left font-bold flex items-center p-5 rounded-2xl min-h-[90px] text-lg border-2 ${style}`}
                                             style={bgStyle}
                                         >
                                             <div className={`rounded-xl flex items-center justify-center shrink-0 mr-4 font-black text-sm border-2 transition-colors w-10 h-10
-                                                ${(isAnswered && (showImmediateFeedback || isGlobalTimeUp)) ?
+                                                ${(isAnswered && (shouldRevealCurrentQuestion || isGlobalTimeUp)) ?
                                                     (isCorrectOpt ? 'bg-green-500 border-green-500 text-white' : isSelected ? 'bg-red-500 border-red-500 text-white' : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400') :
                                                     (isSelected ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800/50 border-slate-300 dark:border-white/5 text-slate-700 dark:text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:border-indigo-600')}`}>
                                                 {String.fromCharCode(65 + idx)}
                                             </div>
                                             <span className="flex-1 leading-snug">{opt}</span>
 
-                                            {(showImmediateFeedback || isGlobalTimeUp) && isAnswered && isCorrectOpt && (
+                                            {(shouldRevealCurrentQuestion || isGlobalTimeUp) && isAnswered && isCorrectOpt && (
                                                 <div className="ml-3 p-1.5 bg-green-500 rounded-full text-white shrink-0 shadow-lg">
                                                     <Check size={14} strokeWidth={4} />
                                                 </div>
                                             )}
-                                            {(showImmediateFeedback || isGlobalTimeUp) && isSelected && !isCorrectOpt && (
+                                            {(shouldRevealCurrentQuestion || isGlobalTimeUp) && isSelected && !isCorrectOpt && (
                                                 <div className="ml-3 p-1.5 bg-red-500 rounded-full text-white shrink-0 shadow-lg">
                                                     <X size={14} strokeWidth={4} />
                                                 </div>
@@ -730,6 +1070,19 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                     );
                                 })}
                             </div>
+
+                            {showImmediateFeedback && isCurrentQuestionMultiple && !isBilan && !isGlobalTimeUp && (
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleConfirmMultipleAnswer}
+                                        disabled={!isAnswered || isCurrentQuestionConfirmed || (isChronoMode && currentIndex !== chronoActiveIndex)}
+                                        className="px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all disabled:opacity-40 bg-indigo-600 text-white shadow-lg shadow-indigo-500/20"
+                                    >
+                                        {isCurrentQuestionConfirmed ? 'Réponses confirmées' : 'Confirmer mes réponses'}
+                                    </button>
+                                </div>
+                            )}
 
                             {/* Feedback Reveal */}
                             {isBilan && (
@@ -877,6 +1230,13 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                                 >
                                                     <FileText size={14} /> Exporter PDF (.pdf)
                                                 </button>
+                                                <button
+                                                    onClick={() => handleExportQuiz('aiken')}
+                                                    className="w-full py-2.5 rounded-xl font-black text-xs border transition-all hover:scale-[1.01] flex items-center justify-center gap-2"
+                                                    style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)' }}
+                                                >
+                                                    <FileText size={14} /> Exporter Aiken (.txt)
+                                                </button>
                                             </div>
                                         </div>
 
@@ -916,6 +1276,31 @@ const QuizPlayer = ({ quiz, onClose, isReview = false, onPublish, publishLabel =
                                                 className="w-full rounded-2xl border p-3 text-sm outline-none resize-none"
                                                 style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--glass-border)', color: 'var(--text-primary)' }}
                                             />
+
+                                            {canSubmitPublicFeedback && (
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSubmitPublicFeedback}
+                                                    disabled={submittingPublicFeedback || publicFeedbackSuccess || !String(userComment || '').trim()}
+                                                    className="w-full py-3 rounded-2xl font-black text-xs uppercase tracking-wide bg-indigo-600 text-white disabled:opacity-45"
+                                                >
+                                                    {submittingPublicFeedback
+                                                        ? 'Envoi en cours...'
+                                                        : publicFeedbackSuccess
+                                                            ? 'Score et commentaire envoyes'
+                                                            : 'Envoyer score et commentaire'}
+                                                </button>
+                                            )}
+
+                                            {!currentUser && quiz?.visibilite === 'public' && !isLiveSessionParticipant && (
+                                                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                                                    Connectez-vous pour enregistrer votre score et publier votre commentaire.
+                                                </p>
+                                            )}
+
+                                            {publicFeedbackError && (
+                                                <p className="text-xs font-bold text-red-500">{publicFeedbackError}</p>
+                                            )}
                                         </div>
 
                                         <div className="rounded-3xl p-5 border space-y-3" style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--glass-border)' }}>

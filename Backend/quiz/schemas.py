@@ -85,3 +85,67 @@ class ManualQuizTranslateResponse(BaseModel):
     titre: str
     description: str
     questions: List[dict] = Field(default_factory=list)
+
+
+class QuizCreatorSummary(BaseModel):
+    id_utilisateur: str
+    nom_affichage: Optional[str] = None
+    photo_url: Optional[str] = None
+
+
+class QuizPlayerScore(BaseModel):
+    id_utilisateur: str
+    nom_affichage: Optional[str] = None
+    photo_url: Optional[str] = None
+    best_score: int = 0
+    attempts: int = 0
+    last_played_at: Optional[datetime] = None
+
+
+class QuizCommentAuthor(BaseModel):
+    id_utilisateur: str
+    nom_affichage: Optional[str] = None
+    photo_url: Optional[str] = None
+
+
+class QuizCommentResponse(BaseModel):
+    id_commentaire: str
+    contenu: str
+    note: Optional[float] = None
+    id_parent: Optional[str] = None
+    date_publication: datetime
+    auteur: QuizCommentAuthor
+    replies: List["QuizCommentResponse"] = Field(default_factory=list)
+
+
+class QuizPublicDetailResponse(BaseModel):
+    quiz: QuizSummary
+    createur: Optional[QuizCreatorSummary] = None
+    can_clone: bool = True
+    stats: dict = Field(default_factory=dict)
+    players: List[QuizPlayerScore] = Field(default_factory=list)
+    comments: List[QuizCommentResponse] = Field(default_factory=list)
+
+
+class QuizCommentCreateRequest(BaseModel):
+    contenu: str = Field(..., min_length=1, max_length=1200)
+    note: Optional[float] = Field(default=None, ge=0.5, le=5)
+    id_parent: Optional[str] = None
+
+
+class QuizPublicSubmissionRequest(BaseModel):
+    score: int = Field(default=0, ge=0)
+    total_score: int = Field(default=0, ge=0)
+    note: Optional[float] = Field(default=None, ge=0, le=5)
+    commentaire: Optional[str] = Field(default=None, max_length=1200)
+    question_breakdown: List[dict] = Field(default_factory=list)
+
+
+class QuizPublicSubmissionResponse(BaseModel):
+    message: str
+    saved_score: int = 0
+    saved_comment: bool = False
+    comment: Optional[QuizCommentResponse] = None
+
+
+QuizCommentResponse.model_rebuild()

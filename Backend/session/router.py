@@ -160,6 +160,7 @@ def build_session_detail_payload(session_db: models.Session):
         computed_question_count = quiz_db.nombre_questions if (quiz_db.nombre_questions and quiz_db.nombre_questions > 0) else len(quiz_db.questions or [])
         generation_params = quiz_db.parametres_generation or {}
         time_mode = generation_params.get("time_mode")
+        time_value_unit = generation_params.get("time_value_unit")
 
         try:
             time_value = int(generation_params.get("time_value")) if generation_params.get("time_value") is not None else None
@@ -168,7 +169,13 @@ def build_session_detail_payload(session_db: models.Session):
 
         computed_duration = quiz_db.duree_max_minutes
         if time_mode == "Timer Global":
-            computed_duration = time_value if time_value is not None else computed_duration
+            if time_value is not None:
+                if str(time_value_unit or '').lower() == 'seconds':
+                    computed_duration = int(math.ceil(max(0, time_value) / 60))
+                else:
+                    computed_duration = time_value
+            else:
+                computed_duration = computed_duration
         elif time_mode == "Mode Chrono":
             computed_duration = None
         elif not computed_duration:
@@ -182,6 +189,7 @@ def build_session_detail_payload(session_db: models.Session):
             "duree_max_minutes": computed_duration,
             "time_mode": time_mode,
             "time_value": time_value,
+            "time_value_unit": time_value_unit,
         }
 
     return {
@@ -374,6 +382,21 @@ def upsert_session_progress(
         "last_update": datetime.utcnow(),
         "question_breakdown": payload.question_breakdown or [],
     }
+
+    # Persist score history for social/public quiz details pages.
+    db.execute(
+        models.participe.update()
+        .where(
+            models.participe.c.id_session == session_db.id_session,
+            models.participe.c.id_utilisateur == current_user.id_utilisateur,
+        )
+        .values(
+            score_final=max(0, int(payload.score or 0)),
+            reponses_utilisateur=payload.question_breakdown or [],
+            date_participation=datetime.utcnow(),
+        )
+    )
+    db.commit()
 
     return {"message": "Progression mise à jour"}
 

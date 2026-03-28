@@ -72,12 +72,12 @@ const AuthModal = ({ isOpen, onClose, initialMode = 'login', onAuthSuccess }) =>
                 return;
             }
 
-            // Store token
-            localStorage.setItem('qvibe_token', data.access_token);
-
+            // Store token for this tab only
+            sessionStorage.setItem('qvibe_token', data.access_token);
+            api.setToken(data.access_token);
             // Use the user object returned directly from login/register (no extra round-trip)
             const userData = data.user;
-            localStorage.setItem('qvibe_user', JSON.stringify(userData));
+            sessionStorage.setItem('qvibe_user', JSON.stringify(userData));
 
             onAuthSuccess(userData);
             onClose();

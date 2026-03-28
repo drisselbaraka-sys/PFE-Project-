@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import random
 import string
+from typing import List
 
 from database.database import get_db
-from database.models import Utilisateur
+from database.models import Utilisateur, Notification
 from .schemas import UserCreate, UserLogin, Token, UserResponse, ResetPasswordRequest, ResetPasswordConfirm, UserUpdatePreferences, ProfileUpdate, AvatarResponse
 from .utils import hash_password, verify_password, create_access_token, get_current_user
 
@@ -185,3 +186,53 @@ def update_preferences(data: UserUpdatePreferences, current_user: Utilisateur = 
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.get("/notifications")
+def get_notifications(
+    limit: int = 50,
+    current_user: Utilisateur = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Récupérer les notifications de l'utilisateur connecté."""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    notifications: List[Notification] = (
+        db.query(Notification)
+        .filter(Notification.id_utilisateur == current_user.id_utilisateur)
+        .order_by(Notification.date_creation.desc())
+        .limit(safe_limit)
+        .all()
+    )
+
+    return [
+        {
+            "id_notification": notif.id_notification,
+            "type": notif.type,
+            "titre": notif.titre,
+            "message": notif.message,
+            "donnees_contexte": notif.donnees_contexte or {},
+            "est_lue": bool(notif.est_lue),
+            "date_creation": notif.date_creation,
+        }
+        for notif in notifications
+    ]
+
+
+@router.put("/notifications/{notification_id}/read")
+def mark_notification_as_read(
+    notification_id: str,
+    current_user: Utilisateur = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Marquer une notification comme lue."""
+    notif = db.query(Notification).filter(
+        Notification.id_notification == notification_id,
+        Notification.id_utilisateur == current_user.id_utilisateur,
+    ).first()
+
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification introuvable.")
+
+    notif.est_lue = True
+    db.commit()
+    return {"detail": "Notification marquée comme lue."}

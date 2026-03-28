@@ -39,3 +39,18 @@ yarn-error.log*
 *.swp
 *.swo
 .DS_Store
+
+# Database
+*.db
+*.sqlite3
+*.sqlite
+backend/database.db
+backend/test.db
+
+# User Uploads
+Backend/uploads/avatars/*
+!Backend/uploads/avatars/.gitkeep
+Backend/uploads/documents/*
+!Backend/uploads/documents/.gitkeep
+Backend/uploads/thumbnails/*
+!Backend/uploads/thumbnails/.gitkeep

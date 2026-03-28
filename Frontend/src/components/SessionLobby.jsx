@@ -5,6 +5,126 @@ import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import api from '../utils/api';
 
+const sanitizeAikenLine = (value, fallback = '') => {
+    const normalized = String(value ?? fallback)
+        .replace(/\r?\n+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized || fallback;
+};
+
+const normalizeAnswerToken = (value) => {
+    if (value === undefined || value === null) return '';
+    return String(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[\u064B-\u065F\u0670]/g, '')
+        .replace(/[ـ]/g, '')
+        .replace(/[{}\[\]()]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+};
+
+const splitPossibleMultiAnswerString = (value) => {
+    const cleaned = String(value || '').trim().replace(/^[{[(]+|[}\])]+$/g, '');
+    if (!cleaned) return [];
+
+    const parts = cleaned
+        .split(/\s*(?:,|،|;|\||\bet\b|\band\b)\s*/i)
+        .map(item => item.trim())
+        .filter(Boolean);
+
+    return parts.length > 1 ? parts : [cleaned];
+};
+
+const normalizeToArray = (value) => {
+    if (Array.isArray(value)) return value.flatMap(item => splitPossibleMultiAnswerString(item));
+    if (value === undefined || value === null || value === '') return [];
+    return splitPossibleMultiAnswerString(value);
+};
+
+const stripOptionPrefix = (value) => String(value || '')
+    .replace(/^\s*(?:option|reponse|réponse)\s*[A-Z0-9]+\s*[:)\-.]?\s*/i, '')
+    .replace(/^\s*[A-Z]\s*[:)\-.]\s*/i, '')
+    .trim();
+
+const extractOptionIndexFromToken = (value, optionsLength) => {
+    const raw = String(value || '').trim();
+    if (!raw) return -1;
+
+    const compact = raw.replace(/\s+/g, ' ');
+    const match = compact.match(/^(?:option|reponse|réponse)?\s*([A-Za-z]|\d+)\s*[:)\-.]?$/i);
+    if (!match) return -1;
+
+    const token = match[1];
+    if (/^[A-Za-z]$/.test(token)) {
+        const idx = token.toUpperCase().charCodeAt(0) - 65;
+        return idx >= 0 && idx < optionsLength ? idx : -1;
+    }
+
+    const numeric = Number.parseInt(token, 10);
+    if (!Number.isFinite(numeric)) return -1;
+    const idx = numeric - 1;
+    return idx >= 0 && idx < optionsLength ? idx : -1;
+};
+
+const resolveAnswerTokenToIndex = (answerToken, options) => {
+    if (!Array.isArray(options) || options.length === 0) return -1;
+
+    const directIndex = extractOptionIndexFromToken(answerToken, options.length);
+    if (directIndex >= 0) return directIndex;
+
+    const normalizedToken = normalizeAnswerToken(answerToken);
+    const normalizedTokenWithoutPrefix = normalizeAnswerToken(stripOptionPrefix(answerToken));
+
+    if (!normalizedToken && !normalizedTokenWithoutPrefix) return -1;
+
+    const normalizedOptions = options.map((option) => ({
+        full: normalizeAnswerToken(option),
+        stripped: normalizeAnswerToken(stripOptionPrefix(option)),
+    }));
+
+    const exactIndex = normalizedOptions.findIndex(({ full, stripped }) => (
+        full === normalizedToken
+        || stripped === normalizedToken
+        || full === normalizedTokenWithoutPrefix
+        || stripped === normalizedTokenWithoutPrefix
+    ));
+    if (exactIndex >= 0) return exactIndex;
+
+    const fuzzyIndex = normalizedOptions.findIndex(({ full, stripped }) => {
+        const candidates = [normalizedToken, normalizedTokenWithoutPrefix].filter(Boolean);
+        return candidates.some((candidate) => (
+            candidate.length > 2
+            && (
+                full.includes(candidate)
+                || stripped.includes(candidate)
+                || candidate.includes(full)
+                || candidate.includes(stripped)
+            )
+        ));
+    });
+
+    return fuzzyIndex;
+};
+
+const resolveAnswerToOptionIndices = (answerValue, options) => {
+    const answerTokens = normalizeToArray(answerValue);
+    const indexes = answerTokens
+        .map((token) => resolveAnswerTokenToIndex(token, options))
+        .filter((idx) => idx >= 0 && idx < options.length);
+
+    return [...new Set(indexes)].sort((a, b) => a - b);
+};
+
+const formatClockFromSeconds = (rawSeconds) => {
+    const totalSeconds = Math.max(0, Number.parseInt(rawSeconds, 10) || 0);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
 const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunchGame }) => {
     const [sessionData, setSessionData] = useState(null);
     const [copied, setCopied] = useState(false);
@@ -20,6 +140,7 @@ const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunch
     const hostMode = isCreator || (!!sessionData && sessionData.id_utilisateur === currentUserId);
     const timeMode = quizInfo?.time_mode;
     const configuredTimeValue = quizInfo?.time_value;
+    const configuredTimeUnit = quizInfo?.time_value_unit;
     const participantStats = sessionData?.stats || {};
     const countdownData = sessionData?.countdown || {};
     const isQuizFinishedForHost = hostMode
@@ -43,10 +164,32 @@ const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunch
             ? 'Durée chrono'
             : 'Durée';
 
+    const getSessionDurationSeconds = () => {
+        const parsedValue = Number.parseInt(configuredTimeValue, 10);
+        const parsedDurationMinutes = Number.parseInt(quizInfo?.duree_max_minutes, 10);
+        const normalizedUnit = String(configuredTimeUnit || '').toLowerCase();
+
+        if (timeMode === 'Timer Global') {
+            if (Number.isFinite(parsedValue) && parsedValue >= 0) {
+                return normalizedUnit === 'seconds' ? parsedValue : parsedValue * 60;
+            }
+            return (Number.isFinite(parsedDurationMinutes) && parsedDurationMinutes > 0 ? parsedDurationMinutes : 0) * 60;
+        }
+
+        if (timeMode === 'Mode Chrono') {
+            if (Number.isFinite(parsedValue) && parsedValue >= 0) {
+                return normalizedUnit === 'minutes' ? parsedValue * 60 : parsedValue;
+            }
+            return 0;
+        }
+
+        return 0;
+    };
+
     const durationValue = timeMode === 'Timer Global'
-        ? `${configuredTimeValue ?? quizInfo?.duree_max_minutes ?? '-'} min`
+        ? formatClockFromSeconds(getSessionDurationSeconds())
         : timeMode === 'Mode Chrono'
-            ? `${configuredTimeValue ?? '-'} sec/question`
+            ? `${formatClockFromSeconds(getSessionDurationSeconds())} / question`
             : (quizInfo?.duree_max_minutes ? `${quizInfo.duree_max_minutes} min` : 'Libre');
 
     useEffect(() => {
@@ -155,7 +298,68 @@ const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunch
         try {
             fullQuiz = await api.get(`/session/${sessionCode}/quiz`);
         } catch (err) {
-            alert("Impossible de charger les détails du quiz pour le PDF.");
+            alert("Impossible de charger les détails du quiz pour l'export.");
+            return;
+        }
+
+        if (format === 'aiken') {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const questions = Array.isArray(fullQuiz?.questions) ? fullQuiz.questions : [];
+
+            const blocks = questions.map((question, index) => {
+                const questionTitle = sanitizeAikenLine(
+                    question?.texte_question,
+                    `Question ${index + 1}`
+                );
+
+                const optionValues = (Array.isArray(question?.options_reponses) ? question.options_reponses : [])
+                    .map((option) => sanitizeAikenLine(option))
+                    .filter(Boolean)
+                    .slice(0, 26);
+
+                const uniqueCorrectIndices = resolveAnswerToOptionIndices(
+                    question?.reponse_correcte,
+                    optionValues
+                );
+
+                const optionsToExport = optionValues.length
+                    ? optionValues
+                    : ['Option indisponible'];
+
+                const answerLetters = uniqueCorrectIndices.length
+                    ? uniqueCorrectIndices.map((idx) => alphabet[idx]).join(',')
+                    : 'A';
+
+                const optionLines = optionsToExport.map(
+                    (option, optionIndex) => `${alphabet[optionIndex]}. ${option}`
+                );
+
+                return [
+                    questionTitle,
+                    ...optionLines,
+                    `ANSWER: ${answerLetters}`,
+                ].join('\n');
+            });
+
+            const aikenContent = [
+                `# Quiz: ${sanitizeAikenLine(fullQuiz?.titre || quizInfo?.titre, 'Quiz Live')}`,
+                `# Session: ${sessionCode}`,
+                `# Export: ${new Date().toLocaleString()}`,
+                '# Format: AIKEN',
+                '',
+                blocks.join('\n\n'),
+                '',
+            ].join('\n');
+
+            const blob = new Blob([aikenContent], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `session-live-${sessionCode}-aiken.txt`;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
             return;
         }
 
@@ -545,7 +749,7 @@ const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunch
                             <div className="flex items-center justify-between mb-3">
                                 <p className="font-black">Exports créateur</p>
                             </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                 <button
                                     onClick={() => handleExportHostReport('excel')}
                                     className="py-2.5 rounded-xl border font-black text-xs flex items-center justify-center gap-2"
@@ -559,6 +763,13 @@ const SessionLobby = ({ sessionCode, isCreator, currentUserId, onClose, onLaunch
                                     style={{ borderColor: 'var(--border)' }}
                                 >
                                     <FileText size={14} /> Exporter PDF
+                                </button>
+                                <button
+                                    onClick={() => handleExportHostReport('aiken')}
+                                    className="py-2.5 rounded-xl border font-black text-xs flex items-center justify-center gap-2"
+                                    style={{ borderColor: 'var(--border)' }}
+                                >
+                                    <FileText size={14} /> Exporter Aiken
                                 </button>
                             </div>
                         </div>

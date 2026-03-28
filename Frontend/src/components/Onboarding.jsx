@@ -5,14 +5,25 @@ import { Check, ArrowRight, Sparkles, Rocket } from 'lucide-react';
 
 const CATEGORIES = [
     { id: 'tech', label: 'Tech & Innovation', image: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&q=80&w=400', icon: '💻' },
-    { id: 'cinema', label: 'Cinéma & Séries', image: 'https://images.unsplash.com/photo-1485095329441-dbf41cc20c7a?auto=format&fit=crop&q=80&w=400', icon: '🎬' },
+    { id: 'cinema', label: 'Cinéma & Séries', image: 'https://images.unsplash.com/photo-1524985069026-dd778a71c7b4?auto=format&fit=crop&q=80&w=400', icon: '🎬' },
     { id: 'history', label: 'Histoire', image: 'https://images.unsplash.com/photo-1447069387593-a5de0862481e?auto=format&fit=crop&q=80&w=400', icon: '🏛️' },
-    { id: 'science', label: 'Sciences', image: 'https://images.unsplash.com/photo-1532187863486-abf51ad98279?auto=format&fit=crop&q=80&w=400', icon: '🧪' },
+    { id: 'science', label: 'Sciences', image: 'https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&q=80&w=400', icon: '🧪' },
     { id: 'sport', label: 'Sports', image: 'https://images.unsplash.com/photo-1517649763962-0c623066013b?auto=format&fit=crop&q=80&w=400', icon: '⚽' },
     { id: 'art', label: 'Art & Design', image: 'https://images.unsplash.com/photo-1460661419201-fd4cecdf8a8b?auto=format&fit=crop&q=80&w=400', icon: '🎨' },
     { id: 'music', label: 'Musique', image: 'https://images.unsplash.com/photo-1511379938547-c1f69419868d?auto=format&fit=crop&q=80&w=400', icon: '🎵' },
     { id: 'gaming', label: 'Gaming', image: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&q=80&w=400', icon: '🎮' }
 ];
+
+const CATEGORY_FALLBACK_IMAGES = {
+    tech: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&q=80&w=400',
+    cinema: 'https://images.unsplash.com/photo-1524985069026-dd778a71c7b4?auto=format&fit=crop&q=80&w=400',
+    history: 'https://images.unsplash.com/photo-1447069387593-a5de0862481e?auto=format&fit=crop&q=80&w=400',
+    science: 'https://images.unsplash.com/photo-1532094349884-543bc11b234d?auto=format&fit=crop&q=80&w=400',
+    sport: 'https://images.unsplash.com/photo-1517649763962-0c623066013b?auto=format&fit=crop&q=80&w=400',
+    art: 'https://images.unsplash.com/photo-1460661419201-fd4cecdf8a8b?auto=format&fit=crop&q=80&w=400',
+    music: 'https://images.unsplash.com/photo-1511379938547-c1f69419868d?auto=format&fit=crop&q=80&w=400',
+    gaming: 'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&q=80&w=400',
+};
 
 const ONBOARDING_STEPS = 4;
 
@@ -48,7 +59,7 @@ const Onboarding = ({ user, onComplete }) => {
                 }
             });
 
-            localStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
+            sessionStorage.setItem('qvibe_user', JSON.stringify(updatedUser));
             onComplete(updatedUser);
         } catch (err) {
             console.error("Failed to save preferences:", err);
@@ -206,7 +217,16 @@ const Onboarding = ({ user, onComplete }) => {
                                             : 'border-transparent'
                                             }`}
                                     >
-                                        <img src={cat.image} alt={cat.label} className="absolute inset-0 w-full h-full object-cover" />
+                                        <img
+                                            src={cat.image}
+                                            alt={cat.label}
+                                            className="absolute inset-0 w-full h-full object-cover"
+                                            onError={(event) => {
+                                                if (event.currentTarget.dataset.fallbackApplied === '1') return;
+                                                event.currentTarget.dataset.fallbackApplied = '1';
+                                                event.currentTarget.src = CATEGORY_FALLBACK_IMAGES[cat.id] || CATEGORY_FALLBACK_IMAGES.tech;
+                                            }}
+                                        />
                                         <div className={`absolute inset-0 transition-all duration-500 ${formData.interests.includes(cat.id) ? 'bg-indigo-900/40 backdrop-blur-xs' : 'bg-black/40'}`} />
                                         <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
                                             <span className="text-3xl mb-1">{cat.icon}</span>

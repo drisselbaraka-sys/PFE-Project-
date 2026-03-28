@@ -1,8 +1,13 @@
 const API_URL = 'http://localhost:8001';
 
 const api = {
+    currentToken: null,
+    setToken(token) {
+        this.currentToken = token;
+    },
     async request(endpoint, options = {}) {
-        const token = localStorage.getItem('qvibe_token');
+        // Enforce using the tab's current React state token before falling back to tab-local storage
+        const token = this.currentToken || sessionStorage.getItem('qvibe_token');
 
         const headers = {
             ...options.headers,
@@ -28,15 +33,8 @@ const api = {
             const response = await fetch(`${API_URL}${normalizedEndpoint}`, config);
 
             if (response.status === 401) {
-                // Token might be expired
-                console.warn(' [API] Unauthorized (401) - Potential token expiration.');
-
-                // Dispatch a global event for logout handling if needed
-                window.dispatchEvent(new CustomEvent('auth:unauthorized'));
-
-                // Clear storage if we're sure it's an auth failure
-                localStorage.removeItem('qvibe_token');
-                localStorage.removeItem('qvibe_user');
+                // Keep session state untouched: logout must be explicit from header action.
+                console.warn(' [API] Unauthorized (401) - keeping local session state unchanged.');
 
                 const error = await response.json().catch(() => ({}));
                 throw { status: 401, message: error.detail || 'Session expirée. Veuillez vous reconnecter.', ...error };
