@@ -39,6 +39,17 @@ yarn-error.log*
 *.swp
 *.swo
 .DS_Store
+*~
+
+# Backups / temp files
+*.bak
+*.backup
+*.orig
+*.rej
+*.tmp
+*.temp
+temp_*.txt
+patch_*.py
 
 # Database
 *.db
